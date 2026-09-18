@@ -2,6 +2,22 @@
   "name": "review-lsp",
   "version": "0.1.0-alpha.1",
   "description": "Candidate-bound semantic code intelligence with provenance for AI code review",
+  "keywords": [
+    "lsp",
+    "code-review",
+    "typescript",
+    "mcp",
+    "ai",
+    "provenance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maemreyo/review-lsp.git"
+  },
+  "homepage": "https://github.com/maemreyo/review-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/maemreyo/review-lsp/issues"
+  },
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
