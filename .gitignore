@@ -3,5 +3,6 @@ dist/
 .review-lsp/
 .tmp/
 coverage/
+artifacts/
 *.log
 .DS_Store

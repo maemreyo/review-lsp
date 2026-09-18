@@ -63,13 +63,17 @@ export class StdioLspDriver {
       detached: process.platform !== "win32",
       shell: false,
     });
-    this.child.on("exit", () => {
-      this.exited = true;
-    });
     this.connection = createMessageConnection(
       new StreamMessageReader(this.child.stdout),
       new StreamMessageWriter(this.child.stdin),
     );
+    this.child.on("exit", () => {
+      this.exited = true;
+      if (!this.closed) {
+        this.closed = true;
+        this.connection.dispose();
+      }
+    });
     this.registerHandlers();
   }
 

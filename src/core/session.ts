@@ -14,6 +14,7 @@ import type {
   BindingState,
   CandidateDescriptor,
   EnvironmentManifest,
+  IsolationKind,
   SemanticReceipt,
   TypeScriptProfile,
 } from "./types.js";
@@ -105,6 +106,7 @@ export class SemanticSession {
     readonly profile: TypeScriptProfile,
     readonly stateDirectory: string,
     environment: EnvironmentManifest,
+    readonly isolation: IsolationKind,
     private readonly driver: StdioLspDriver,
   ) {
     this.sessionId = contentId("sess", {
@@ -122,10 +124,15 @@ export class SemanticSession {
     profile: TypeScriptProfile;
     stateDirectory: string;
     requestTimeoutMs?: number;
+    isolation?: IsolationKind;
+    isolationIdentity?: string;
   }): Promise<SemanticSession> {
     await verifyCandidateIntegrity(input.candidate);
     await verifyTypeScriptProfile(input.profile);
-    const environment = await buildEnvironmentManifest(input.candidate, input.profile);
+    const isolation = input.isolation ?? input.candidate.isolation;
+    const isolationIdentity = input.isolationIdentity
+      ?? (isolation === "TRUSTED_LOCAL" ? `native:${process.platform}:${process.arch}` : "container:unbound");
+    const environment = await buildEnvironmentManifest(input.candidate, input.profile, isolation, isolationIdentity);
 
     const provisionalSessionId = contentId("sessroot", {
       candidate_id: input.candidate.candidate_id,
@@ -148,7 +155,7 @@ export class SemanticSession {
       input.requestTimeoutMs ?? 10_000,
     );
     await driver.start();
-    return new SemanticSession(input.candidate, input.profile, input.stateDirectory, environment, driver);
+    return new SemanticSession(input.candidate, input.profile, input.stateDirectory, environment, isolation, driver);
   }
 
   async candidateInfo(): Promise<{
@@ -271,7 +278,7 @@ export class SemanticSession {
       execution_status: "OK",
       source_binding: "VERIFIED",
       environment_binding: environmentBinding,
-      isolation: this.candidate.isolation,
+      isolation: this.isolation,
       result_scope: "SERVER_RESPONSE",
       limitations: [...new Set(limitations)],
       result: stableResult,

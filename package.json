@@ -1,37 +1,64 @@
 {
   "name": "review-lsp",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-alpha.1",
   "description": "Candidate-bound semantic code intelligence with provenance for AI code review",
   "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
   "bin": {
-    "review-lsp": "./dist/src/cli.js"
+    "review-lsp": "./dist/review-lsp.mjs"
+  },
+  "files": [
+    "dist/src",
+    "dist/review-lsp.mjs",
+    "dist/review-lsp-artifact.json",
+    "dist/review-lsp-licenses.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=22.19.0 <25"
   },
   "packageManager": "pnpm@10.20.0",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"import { createRequire as __reviewLspCreateRequire } from 'node:module'; const require = __reviewLspCreateRequire(import.meta.url);\" --outfile=dist/review-lsp.mjs && node dist/scripts/build-artifact-manifest.js && node scripts/license-report.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:acceptance": "vitest run --project acceptance",
     "test:mcp:stdio": "pnpm build && node test/smoke/mcp-stdio.mjs",
+    "test:package": "node test/smoke/package-install.mjs",
     "demo:ab": "pnpm build && node examples/typescript-ab/demo.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm build && node test/smoke/mcp-stdio.mjs"
+    "benchmark": "pnpm build && node scripts/benchmark.mjs",
+    "container:build": "node scripts/container-build.mjs",
+    "test:container:linux": "pnpm build && node test/smoke/container-linux.mjs",
+    "licenses": "pnpm build && cat dist/review-lsp-licenses.json",
+    "prepack": "pnpm build",
+    "check": "pnpm typecheck && pnpm test && pnpm build && node test/smoke/mcp-stdio.mjs && node test/smoke/package-install.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "typescript": "6.0.3",
+    "typescript-language-server": "6.0.0",
     "vscode-jsonrpc": "9.0.2",
     "vscode-languageserver-protocol": "3.18.3",
     "vscode-uri": "3.2.0",
-    "zod": "4.6.1",
-    "typescript": "6.0.3",
-    "typescript-language-server": "6.0.0"
+    "zod": "4.6.1"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
+    "esbuild": "0.28.2",
     "vitest": "4.1.0"
   },
   "license": "Apache-2.0"

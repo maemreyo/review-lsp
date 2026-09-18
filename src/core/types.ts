@@ -66,6 +66,8 @@ export interface EnvironmentManifest {
   platform: string;
   arch: string;
   node_version: string;
+  isolation: IsolationKind;
+  isolation_identity: string;
   source_config_digests: Array<{ path: string; sha256: string }>;
   dependency_snapshot: { state: "NONE" | "BOUND" | "MISSING"; sha256?: string };
   external_inputs: string[];

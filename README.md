@@ -2,46 +2,62 @@
 
 **Semantic context for the exact commit under review.**
 
-Review-LSP runs LSP semantic queries against a Git candidate materialized from Git objects, not against whatever checkout happens to be live. Every successful query returns a content-addressed receipt binding the candidate, source manifest, TypeScript server/compiler profile, document bytes, request position, result, environment state, and native isolation level.
+Review-LSP runs LSP semantic queries against a Git candidate materialized from Git objects, not against whatever checkout happens to be live. Every successful query returns a content-addressed receipt binding candidate identity, source manifest, TypeScript server/compiler profile, document bytes, request position, result, environment state, and isolation mode.
 
-This repository is currently an implementation worktree, not a published npm package. Do not use an npm install command until an alpha artifact is actually published.
+Current version candidate: **0.1.0-alpha.1**. The npm package is not considered published until the H5 release gate and registry verification complete.
 
-## What works now
+## Why
 
-- Local Git commit candidates resolved to full object IDs.
-- Source materialized with `git ls-tree` + `git cat-file`; live checkout bytes are not used.
-- Fail-closed handling for submodules, unresolved LFS pointers, path/case collisions, escaping/cyclic symlinks, candidate mutation, and profile mutation.
-- TypeScript hover and definition using pinned `typescript-language-server@6.0.0` + `typescript@6.0.3`.
-- CLI prepare/inspect/query/validate/close.
+A live editor LSP answers questions about the workspace that is open now. Code review often needs a different subject: an exact commit or retained candidate. Review-LSP keeps that subject explicit and machine-checkable.
+
+The public A/B demo creates:
+
+- commit A: a symbol is a `string`;
+- commit B: the same symbol becomes a `number`;
+- live checkout: B;
+- Review-LSP query bound to A: still returns A semantics.
+
+A receipt proves which admitted inputs were used. It does **not** prove that the language server's semantic answer is correct.
+
+## Alpha surface
+
+- TypeScript first: pinned `typescript-language-server@6.0.0` + `typescript@6.0.3`.
+- Candidate source from resolved local Git commits.
+- Operations: hover and definition.
+- CLI lifecycle: prepare, inspect, query, validate, close.
 - MCP stdio tools:
   - `review_lsp_candidate_info`
   - `review_lsp_hover`
   - `review_lsp_definition`
-- Query tools require the expected candidate ID.
-- Native mode is explicitly `TRUSTED_LOCAL`, not hermetic isolation.
+- Query tools require `expected_candidate_id`.
+- Native `TRUSTED_LOCAL` mode.
+- Linux `CONTAINER_READ_ONLY` profile implementation with read-only candidate mount and exact Docker image identity.
+- Content-addressed artifact manifest for the bundled alpha CLI.
 
-## Local quickstart
+## Source quickstart
+
+Until the alpha package is published:
 
 ```bash
 pnpm install
-pnpm build
+pnpm check
 pnpm demo:ab
 ```
-
-The demo creates two commits: A exports a `string`, B exports a `number`, leaves the live checkout at B, then asks both candidate sessions about the same symbol. A must still return string semantics and B number semantics.
 
 For an existing repository:
 
 ```bash
-node dist/src/cli.js prepare /path/to/repo <commit> --state /tmp/review-lsp-state
+pnpm build
+node dist/review-lsp.mjs prepare /path/to/repo <commit> --state /tmp/review-lsp-state
 ```
 
 The output includes `candidate_descriptor`. Then:
 
 ```bash
-node dist/src/cli.js query <candidate.json> hover src/example.ts 12 8
-node dist/src/cli.js query <candidate.json> definition src/example.ts 12 8
-node dist/src/cli.js validate <receipt.json>
+node dist/review-lsp.mjs query <candidate.json> hover src/example.ts 12 8
+node dist/review-lsp.mjs query <candidate.json> definition src/example.ts 12 8
+node dist/review-lsp.mjs validate <receipt.json>
+node dist/review-lsp.mjs close <candidate.json>
 ```
 
 Positions are 0-based LSP positions. The v0.1 TypeScript profile records UTF-16 position encoding.
@@ -49,24 +65,85 @@ Positions are 0-based LSP positions. The v0.1 TypeScript profile records UTF-16 
 Run an MCP server bound to one candidate at process start:
 
 ```bash
-node dist/src/cli.js serve /path/to/repo <commit> --state /tmp/review-lsp-state
+node dist/review-lsp.mjs serve /path/to/repo <commit> --state /tmp/review-lsp-state
 ```
 
 Logs go to stderr; stdout is reserved for MCP.
 
+Inspect the packaged provider identity:
+
+```bash
+node dist/review-lsp.mjs artifact-info
+```
+
+## Linux container profile
+
+Build the alpha image from the package tarball:
+
+```bash
+pnpm container:build
+pnpm test:container:linux
+```
+
+A container query uses:
+
+```bash
+node dist/review-lsp.mjs container-query \
+  review-lsp:alpha-local \
+  <candidate.json> hover src/example.ts 12 8 \
+  --state /tmp/review-lsp-state
+```
+
+The outer process resolves the Docker image to an exact image ID. The inner Linux process must verify that `/candidate` is an explicit read-only mount before a receipt may say `isolation=CONTAINER_READ_ONLY`.
+
+The container profile also uses a read-only root filesystem, no network, dropped Linux capabilities, `no-new-privileges`, bounded CPU/memory/pids, and writable tmpfs only for scratch/state.
+
 ## Evidence semantics
 
-`source_binding=VERIFIED` means the retained source still matches the candidate manifest before and after the query. `environment_binding=VERIFIED` means the currently implemented environment admission found no unbound project dependency/config input. Neither means the language server is semantically correct.
+`source_binding=VERIFIED` means the retained source still matches the candidate manifest at the integrity checks required by the profile.
 
-A receipt is tamper-evident through canonical content hashing. It is not a signature and does not protect against a trusted host fabricating an entirely new evidence set.
+`environment_binding=VERIFIED` means the current environment admission found no unbound semantic input covered by the alpha profile. It is **not** a general statement that every project dependency is captured.
+
+`environment_binding=PARTIAL` is expected when a project declares package dependencies or external config inputs that the alpha cannot snapshot/admit yet.
+
+`TRUSTED_LOCAL` means native read-only files plus integrity checks. It is not a hostile-host sandbox and cannot rule out mutate-and-revert by a trusted host.
+
+`CONTAINER_READ_ONLY` means the Linux runtime verified the candidate as a read-only mount and bound the Docker image ID into the environment manifest. It still does not protect against a malicious container host administrator.
+
+Receipts are tamper-evident through canonical content hashing. They are not signatures.
+
+## Verification
+
+Local H5 checks currently include:
+
+- TypeScript A/B real-server acceptance;
+- receipt/candidate/profile tamper rejection;
+- MCP stdio smoke;
+- clean-install npm tarball smoke;
+- LSP timeout/crash/in-flight-close fault injection;
+- package artifact/license validation.
+
+GitHub Actions is configured to prove the release candidate on macOS 14 and Ubuntu 24.04 with Node 22.19.0 and 24.19.0, plus a separate Ubuntu Docker isolation job. Pending CI cells remain pending until the runs complete.
+
+See:
+
+- `docs/status/H1.md`
+- `docs/status/H3.md`
+- `docs/status/H5.md`
+- `docs/compatibility/0.1.0-alpha.1.md`
+- `docs/releases/0.1.0-alpha.1.md`
 
 ## Current limitations
 
-- Package dependency snapshots are not yet prepared/admitted. A project declaring dependencies is marked `environment_binding=PARTIAL`.
-- Native read-only files + pre/post hashing are `TRUSTED_LOCAL`; they do not prevent a malicious host administrator or mutate-and-revert attack.
-- Container/read-only-mount isolation for untrusted PRs is not complete.
-- TypeScript only. References/symbols/diagnostics are intentionally deferred.
+- Package dependency snapshots are not prepared/admitted yet. Dependency-bearing projects remain `PARTIAL`.
+- JavaScript is not claimed as a supported alpha profile.
+- Dirty-worktree candidates are not supported.
+- References, symbols, and diagnostics are deferred.
 - MCP is local stdio only.
-- No OpenCodeReview/Pi/Workbench adapter is included in core yet.
+- Windows is not part of the alpha compatibility claim.
+- Container support is only claimed after Linux CI evidence passes.
+- No receipt is proof that reviewed code is correct.
 
-See `docs/adr/0001-standalone-candidate-lsp.md` and milestone status files for the exact implementation boundary.
+## License
+
+Apache-2.0. Direct runtime dependency license evidence is generated into `dist/review-lsp-licenses.json` during the alpha build.

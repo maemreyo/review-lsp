@@ -1,7 +1,11 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { loadAndVerifyArtifactManifest } from "./core/artifact.js";
+import { containerImageIdFromEnvironment, runDockerSemanticQuery, verifyLinuxReadOnlyMount } from "./core/container.js";
 import {
   candidateDescriptorPath,
   loadCandidateDescriptor,
@@ -20,6 +24,24 @@ function defaultStateDirectory(): string {
     : join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "review-lsp");
 }
 
+async function packageRootFromModule(): Promise<string> {
+  let current = dirname(fileURLToPath(import.meta.url));
+  const filesystemRoot = parse(current).root;
+  while (true) {
+    try {
+      const pkg = JSON.parse(await readFile(join(current, "package.json"), "utf8")) as { name?: unknown };
+      if (pkg.name === "review-lsp") return current;
+    } catch {
+      // Keep walking; source and bundled entrypoints live at different depths.
+    }
+    if (current === filesystemRoot) break;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw new Error("cannot locate review-lsp package root from CLI module path");
+}
+
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   if (index < 0) return undefined;
@@ -33,9 +55,11 @@ function usage(): never {
   process.stderr.write([
     "Review-LSP",
     "",
+    "  review-lsp artifact-info",
     "  review-lsp prepare <repo> <commit> [--state DIR]",
     "  review-lsp inspect <candidate.json>",
     "  review-lsp query <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
+    "  review-lsp container-query <image> <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
     "  review-lsp validate <receipt.json>",
     "  review-lsp close <candidate.json>",
     "  review-lsp serve <repo> <commit> [--state DIR]",
@@ -52,6 +76,14 @@ async function main(): Promise<void> {
   if (!command) usage();
   const stateOverride = option(args, "--state");
   const stateDirectory = resolve(stateOverride ?? defaultStateDirectory());
+
+  if (command === "artifact-info") {
+    if (args.length !== 0) usage();
+    const packageRoot = await packageRootFromModule();
+    const manifest = await loadAndVerifyArtifactManifest(packageRoot);
+    process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+    return;
+  }
 
   if (command === "prepare") {
     const [repo, commit] = args;
@@ -85,6 +117,64 @@ async function main(): Promise<void> {
     const candidate = await loadCandidateDescriptor(resolve(descriptor));
     await removeCandidate(candidate);
     process.stdout.write(`${JSON.stringify({ removed: true, candidate_id: candidate.candidate_id })}\n`);
+    return;
+  }
+
+  if (command === "container-query") {
+    const [image, descriptor, operation, path, lineRaw, characterRaw] = args;
+    if (!image || !descriptor || !operation || !path || lineRaw === undefined || characterRaw === undefined || args.length !== 6) usage();
+    if (operation !== "hover" && operation !== "definition") usage();
+    const line = Number(lineRaw);
+    const character = Number(characterRaw);
+    if (!Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(character) || character < 0) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    const container = await runDockerSemanticQuery({
+      candidate,
+      operation,
+      path,
+      line,
+      character,
+      image,
+      stateDirectory,
+    });
+    process.stdout.write(`${JSON.stringify({
+      receipt_path: receiptPath(stateDirectory, container.receipt),
+      receipt: container.receipt,
+      environment: container.environment,
+      image_id: container.image_id,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (command === "__container-query") {
+    const [descriptor, operation, path, lineRaw, characterRaw] = args;
+    if (!descriptor || !operation || !path || lineRaw === undefined || characterRaw === undefined || args.length !== 5) usage();
+    if (operation !== "hover" && operation !== "definition") usage();
+    const line = Number(lineRaw);
+    const character = Number(characterRaw);
+    if (!Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(character) || character < 0) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    await verifyLinuxReadOnlyMount(candidate.source_root);
+    const imageId = containerImageIdFromEnvironment();
+    const profile = await createTypeScriptProfile();
+    const session = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory,
+      isolation: "CONTAINER_READ_ONLY",
+      isolationIdentity: `docker:${imageId}`,
+    });
+    try {
+      const receipt = operation === "hover"
+        ? await session.hover({ path, line, character })
+        : await session.definition({ path, line, character });
+      process.stdout.write(`${JSON.stringify({
+        receipt,
+        environment: session.environment,
+      }, null, 2)}\n`);
+    } finally {
+      await session.close();
+    }
     return;
   }
 

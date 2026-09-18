@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
-import type { CandidateDescriptor, EnvironmentManifest, TypeScriptProfile } from "./types.js";
+import type { CandidateDescriptor, EnvironmentManifest, IsolationKind, TypeScriptProfile } from "./types.js";
 
 function stripJsonComments(input: string): string {
   return input
@@ -19,6 +19,10 @@ function configExtends(value: unknown): string | undefined {
 export async function buildEnvironmentManifest(
   candidate: CandidateDescriptor,
   profile: TypeScriptProfile,
+  isolation: IsolationKind = candidate.isolation,
+  isolationIdentity = isolation === "TRUSTED_LOCAL"
+    ? `native:${process.platform}:${process.arch}`
+    : "container:unbound",
 ): Promise<EnvironmentManifest> {
   const limitations: string[] = [];
   const sourceConfigDigests: Array<{ path: string; sha256: string }> = [];
@@ -83,6 +87,8 @@ export async function buildEnvironmentManifest(
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
+    isolation,
+    isolation_identity: isolationIdentity,
     source_config_digests: sourceConfigDigests,
     dependency_snapshot: { state: dependencyState } as { state: "NONE" | "MISSING" },
     external_inputs: [
