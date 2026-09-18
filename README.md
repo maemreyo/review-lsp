@@ -4,7 +4,15 @@
 
 Review-LSP runs LSP semantic queries against a Git candidate materialized from Git objects, not against whatever checkout happens to be live. Every successful query returns a content-addressed receipt binding candidate identity, source manifest, TypeScript server/compiler profile, document bytes, request position, result, environment state, and isolation mode.
 
-Current version candidate: **0.1.0-alpha.1**. The npm package is not considered published until the H5 release gate and registry verification complete.
+Current public alpha: **0.1.0-alpha.1**.
+
+Install explicitly with the prerelease tag:
+
+```bash
+npm install review-lsp@alpha
+```
+
+Because this is the first and currently only published version, npm also exposes it through the registry's required `latest` tag. Treat `@alpha` as the intentional installation channel until the first stable release moves `latest` to a stable version.
 
 ## Why
 
@@ -31,33 +39,29 @@ A receipt proves which admitted inputs were used. It does **not** prove that the
   - `review_lsp_definition`
 - Query tools require `expected_candidate_id`.
 - Native `TRUSTED_LOCAL` mode.
-- Linux `CONTAINER_READ_ONLY` profile implementation with read-only candidate mount and exact Docker image identity.
+- Linux `CONTAINER_READ_ONLY` profile with read-only candidate mount and exact Docker image identity.
 - Content-addressed artifact manifest for the bundled alpha CLI.
 
-## Source quickstart
-
-Until the alpha package is published:
+## Quickstart
 
 ```bash
-pnpm install
-pnpm check
-pnpm demo:ab
+npm install review-lsp@alpha
+npx review-lsp artifact-info
 ```
 
 For an existing repository:
 
 ```bash
-pnpm build
-node dist/review-lsp.mjs prepare /path/to/repo <commit> --state /tmp/review-lsp-state
+npx review-lsp prepare /path/to/repo <commit> --state /tmp/review-lsp-state
 ```
 
 The output includes `candidate_descriptor`. Then:
 
 ```bash
-node dist/review-lsp.mjs query <candidate.json> hover src/example.ts 12 8
-node dist/review-lsp.mjs query <candidate.json> definition src/example.ts 12 8
-node dist/review-lsp.mjs validate <receipt.json>
-node dist/review-lsp.mjs close <candidate.json>
+npx review-lsp query <candidate.json> hover src/example.ts 12 8
+npx review-lsp query <candidate.json> definition src/example.ts 12 8
+npx review-lsp validate <receipt.json>
+npx review-lsp close <candidate.json>
 ```
 
 Positions are 0-based LSP positions. The v0.1 TypeScript profile records UTF-16 position encoding.
@@ -65,7 +69,7 @@ Positions are 0-based LSP positions. The v0.1 TypeScript profile records UTF-16 
 Run an MCP server bound to one candidate at process start:
 
 ```bash
-node dist/review-lsp.mjs serve /path/to/repo <commit> --state /tmp/review-lsp-state
+npx review-lsp serve /path/to/repo <commit> --state /tmp/review-lsp-state
 ```
 
 Logs go to stderr; stdout is reserved for MCP.
@@ -73,12 +77,12 @@ Logs go to stderr; stdout is reserved for MCP.
 Inspect the packaged provider identity:
 
 ```bash
-node dist/review-lsp.mjs artifact-info
+npx review-lsp artifact-info
 ```
 
 ## Linux container profile
 
-Build the alpha image from the package tarball:
+From source, build the alpha image:
 
 ```bash
 pnpm container:build
@@ -112,18 +116,13 @@ The container profile also uses a read-only root filesystem, no network, dropped
 
 Receipts are tamper-evident through canonical content hashing. They are not signatures.
 
-## Verification
+## Release evidence
 
-Local H5 checks currently include:
-
-- TypeScript A/B real-server acceptance;
-- receipt/candidate/profile tamper rejection;
-- MCP stdio smoke;
-- clean-install npm tarball smoke;
-- LSP timeout/crash/in-flight-close fault injection;
-- package artifact/license validation.
-
-GitHub Actions is configured to prove the release candidate on macOS 14 and Ubuntu 24.04 with Node 22.19.0 and 24.19.0, plus a separate Ubuntu Docker isolation job. Pending CI cells remain pending until the runs complete.
+- GitHub Actions compatibility matrix: PASS on macOS 14 and Ubuntu 24.04 with Node 22.19.0 and 24.19.0.
+- Linux Docker isolation smoke: PASS.
+- Public npm registry clean-install A/B smoke: PASS.
+- Published package: `review-lsp@0.1.0-alpha.1`.
+- GitHub prerelease: `v0.1.0-alpha.1`.
 
 See:
 
@@ -141,7 +140,7 @@ See:
 - References, symbols, and diagnostics are deferred.
 - MCP is local stdio only.
 - Windows is not part of the alpha compatibility claim.
-- Container support is only claimed after Linux CI evidence passes.
+- Native mode is not a hostile-host sandbox.
 - No receipt is proof that reviewed code is correct.
 
 ## License
