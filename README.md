@@ -12,7 +12,7 @@ Install explicitly with the prerelease tag:
 npm install review-lsp@alpha
 ```
 
-Because this is the first and currently only published version, npm also exposes it through the registry's required `latest` tag. Treat `@alpha` as the intentional installation channel until the first stable release moves `latest` to a stable version.
+The registry currently exposes both `alpha` and `latest` as `0.1.0-alpha.1`, even though publication used `--tag alpha`. An attempt to remove `latest` returned HTTP 400. Treat `@alpha` as the intentional prerelease installation channel until the first stable release moves `latest` to a stable version.
 
 ## Why
 
@@ -41,6 +41,10 @@ A receipt proves which admitted inputs were used. It does **not** prove that the
 - Native `TRUSTED_LOCAL` mode.
 - Linux `CONTAINER_READ_ONLY` profile with read-only candidate mount and exact Docker image identity.
 - Content-addressed artifact manifest for the bundled alpha CLI.
+
+## Development note
+
+This source repository is managed with pnpm. Do not run `npm install review-lsp@alpha` inside the Review-LSP source checkout after `pnpm install`; npm 11 can crash while traversing pnpm-managed `node_modules`. To test the published package with npm, use a fresh consumer directory. Use `pnpm install --frozen-lockfile` inside this source repository.
 
 ## Quickstart
 
