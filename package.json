@@ -75,7 +75,7 @@
   "devDependencies": {
     "@types/node": "24.10.0",
     "esbuild": "0.28.2",
-    "vitest": "4.1.0"
+    "vitest": "4.1.11"
   },
   "license": "Apache-2.0"
 }
