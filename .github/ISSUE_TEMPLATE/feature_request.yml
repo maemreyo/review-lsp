@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a capability or design change
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful public contract, not only an implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / examples
+      description: Links, fixtures, prior art, or concrete review scenarios.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Standalone core
+        - CLI / MCP
+        - Language profile
+        - Isolation / provenance
+        - Consumer adapter
+        - Packaging / developer experience
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: trust
+    attributes:
+      label: Trust-boundary impact
+      description: Would this change candidate identity, environment admission, receipts, network access, subprocesses, or isolation?

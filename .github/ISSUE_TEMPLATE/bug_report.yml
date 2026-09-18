@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible defect in Review-LSP
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove secrets and private source code from public reports.
+  - type: input
+    id: version
+    attributes:
+      label: Review-LSP version
+      description: Output of `npx review-lsp@alpha artifact-info` or the exact commit.
+      placeholder: 0.1.0-alpha.1 / art_...
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      description: OS, architecture, Node.js version, and isolation mode if relevant.
+      placeholder: macOS arm64, Node 24.19.0, TRUSTED_LOCAL
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Commands and smallest repository/fixture that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include error codes and binding states when relevant.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Area
+      options:
+        - Candidate materialization / identity
+        - Environment binding
+        - LSP process / protocol
+        - Receipt validation
+        - CLI
+        - MCP
+        - Container isolation
+        - Packaging / installation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Security check
+      options:
+        - label: This report does not disclose a security vulnerability. Security issues should use private vulnerability reporting.
+          required: true
