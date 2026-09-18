@@ -5,7 +5,7 @@
   "description": "Candidate-bound semantic code intelligence with provenance for AI code review",
   "type": "module",
   "bin": {
-    "review-lsp": "./dist/cli.js"
+    "review-lsp": "./dist/src/cli.js"
   },
   "engines": {
     "node": ">=22.19.0 <25"
@@ -17,19 +17,21 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:acceptance": "vitest run --project acceptance",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "test:mcp:stdio": "pnpm build && node test/smoke/mcp-stdio.mjs",
+    "demo:ab": "pnpm build && node examples/typescript-ab/demo.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm build && node test/smoke/mcp-stdio.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "vscode-jsonrpc": "9.0.2",
     "vscode-languageserver-protocol": "3.18.3",
     "vscode-uri": "3.2.0",
-    "zod": "4.6.1"
+    "zod": "4.6.1",
+    "typescript": "6.0.3",
+    "typescript-language-server": "6.0.0"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
-    "typescript": "7.0.2",
-    "typescript-language-server": "6.0.0",
     "vitest": "4.1.0"
   },
   "license": "Apache-2.0"
