@@ -174,3 +174,49 @@ export interface AcquisitionReport {
   limitation?: string;
   remediation?: string;
 }
+
+export interface DependencyTreeEntry {
+  path: string;
+  kind: "file" | "directory" | "symlink";
+  sha256?: string;
+  byte_count?: number;
+  executable?: boolean;
+  symlink_target?: string;
+}
+
+export type DependencySnapshotState = "NONE" | "BOUND" | "MISSING" | "UNSUPPORTED";
+
+/**
+ * A sealed, content-addressed dependency projection.
+ *
+ * `snapshot_id` binds the semantic inputs and the resulting tree manifest only.
+ * `materialization_method` and `created_at` are operational metadata: two snapshots that
+ * publish byte-identical trees from identical inputs are the same snapshot whether they were
+ * cloned or copied.
+ */
+export interface DependencySnapshotDescriptor {
+  schema_version: "review-lsp.dependency-snapshot.v1";
+  snapshot_id: string;
+  ecosystem: "node";
+  package_manager: "pnpm";
+  package_manager_version: string;
+  platform: string;
+  arch: string;
+  input_set_id: string;
+  input_manifest: DependencyInputFile[];
+  lockfile_binding: DependencyInputFile;
+  workspace_binding: DependencyInputFile | null;
+  patch_binding: DependencyInputFile[];
+  config_binding: Record<string, string>;
+  network_policy: "OFFLINE";
+  script_policy: "IGNORE_SCRIPTS";
+  lockfile_policy: "FROZEN";
+  dependency_graph: "INCLUDES_DEV";
+  tree_manifest_sha256: string;
+  dependency_root: string;
+  file_count: number;
+  symlink_count: number;
+  total_bytes: number;
+  materialization_method: string;
+  created_at: string;
+}
