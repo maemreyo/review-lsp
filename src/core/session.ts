@@ -8,13 +8,16 @@ import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
+import { verifyProjectionSource } from "./projection.js";
 import { persistReceipt } from "./receipts.js";
 import { verifyTypeScriptProfile } from "./profile.js";
 import type {
   BindingState,
   CandidateDescriptor,
+  DependencySnapshotDescriptor,
   EnvironmentManifest,
   IsolationKind,
+  ProjectionDescriptor,
   SemanticReceipt,
   TypeScriptProfile,
 } from "./types.js";
@@ -35,6 +38,26 @@ function admittedCandidatePath(candidate: CandidateDescriptor, path: string): st
   const delta = relative(candidate.source_root, absolute);
   if (delta.startsWith("..") || isAbsolute(delta)) {
     throw new ReviewLspError("CANDIDATE_PATH_INVALID", `candidate path escapes source root: ${JSON.stringify(path)}`);
+  }
+  return absolute;
+}
+
+/** Resolves an admitted candidate-relative path inside the execution projection. */
+function admittedProjectionPath(
+  projection: ProjectionDescriptor,
+  candidate: CandidateDescriptor,
+  path: string,
+): string {
+  if (!path || path.includes("\0") || isAbsolute(path)) {
+    throw new ReviewLspError("CANDIDATE_PATH_INVALID", `invalid candidate path ${JSON.stringify(path)}`);
+  }
+  if (!candidate.entries.some((entry) => entry.path === path && entry.kind === "file")) {
+    throw new ReviewLspError("CANDIDATE_PATH_INVALID", `document is not an admitted candidate file: ${path}`);
+  }
+  const absolute = resolve(projection.execution_root, path);
+  const delta = relative(projection.execution_root, absolute);
+  if (delta.startsWith("..") || isAbsolute(delta)) {
+    throw new ReviewLspError("CANDIDATE_PATH_INVALID", `candidate path escapes the projection root: ${JSON.stringify(path)}`);
   }
   return absolute;
 }
@@ -108,6 +131,7 @@ export class SemanticSession {
     environment: EnvironmentManifest,
     readonly isolation: IsolationKind,
     private readonly driver: StdioLspDriver,
+    private readonly projection: ProjectionDescriptor | null = null,
   ) {
     this.sessionId = contentId("sess", {
       candidate_id: candidate.candidate_id,
@@ -126,13 +150,30 @@ export class SemanticSession {
     requestTimeoutMs?: number;
     isolation?: IsolationKind;
     isolationIdentity?: string;
+    /** An admitted dependency snapshot to bind into environment evidence. */
+    snapshot?: DependencySnapshotDescriptor | null;
+    /**
+     * Execution projection to run the language server against.
+     *
+     * When present the server is rooted here rather than at the candidate, so the project's
+     * own dependencies resolve. Documents are still read from the candidate, so a receipt
+     * binds candidate bytes rather than whatever the projection happens to hold.
+     */
+    projection?: ProjectionDescriptor | null;
   }): Promise<SemanticSession> {
     await verifyCandidateIntegrity(input.candidate);
     await verifyTypeScriptProfile(input.profile);
     const isolation = input.isolation ?? input.candidate.isolation;
     const isolationIdentity = input.isolationIdentity
       ?? (isolation === "TRUSTED_LOCAL" ? `native:${process.platform}:${process.arch}` : "container:unbound");
-    const environment = await buildEnvironmentManifest(input.candidate, input.profile, isolation, isolationIdentity);
+    const projection = input.projection ?? null;
+    if (projection) await verifyProjectionSource(projection, input.candidate);
+    const environment = await buildEnvironmentManifest(input.candidate, input.profile, {
+      isolation,
+      isolationIdentity,
+      snapshot: input.snapshot ?? null,
+      projection,
+    });
 
     const provisionalSessionId = contentId("sessroot", {
       candidate_id: input.candidate.candidate_id,
@@ -150,12 +191,12 @@ export class SemanticSession {
     ]);
     const driver = new StdioLspDriver(
       input.profile,
-      input.candidate.source_root,
+      projection?.execution_root ?? input.candidate.source_root,
       candidateSafeEnvironment({ home, tmp, profile: input.profile }),
       input.requestTimeoutMs ?? 10_000,
     );
     await driver.start();
-    return new SemanticSession(input.candidate, input.profile, input.stateDirectory, environment, isolation, driver);
+    return new SemanticSession(input.candidate, input.profile, input.stateDirectory, environment, isolation, driver, projection);
   }
 
   async candidateInfo(): Promise<{
@@ -203,7 +244,10 @@ export class SemanticSession {
 
     await verifyCandidateIntegrity(this.candidate);
     await verifyTypeScriptProfile(this.profile);
-    const absolute = admittedCandidatePath(this.candidate, input.path);
+    // The server sees the projection path; the receipt binds the candidate document.
+    const absolute = this.projection
+      ? admittedProjectionPath(this.projection, this.candidate, input.path)
+      : admittedCandidatePath(this.candidate, input.path);
     const languageId = languageIdForPath(input.path);
     if (!languageId) throw new ReviewLspError("CANDIDATE_PATH_INVALID", `unsupported document extension: ${input.path}`);
     const sourceEntry = this.candidate.entries.find((entry) => entry.path === input.path && entry.kind === "file");

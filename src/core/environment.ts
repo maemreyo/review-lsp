@@ -2,7 +2,23 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
-import type { CandidateDescriptor, EnvironmentManifest, IsolationKind, TypeScriptProfile } from "./types.js";
+import type {
+  CandidateDescriptor,
+  DependencySnapshotDescriptor,
+  EnvironmentManifest,
+  IsolationKind,
+  ProjectionDescriptor,
+  TypeScriptProfile,
+} from "./types.js";
+
+export interface EnvironmentOptions {
+  isolation?: IsolationKind;
+  isolationIdentity?: string;
+  /** An admitted, verified dependency snapshot, when one has been published. */
+  snapshot?: DependencySnapshotDescriptor | null;
+  /** The execution projection the language server is pointed at, when one is in use. */
+  projection?: ProjectionDescriptor | null;
+}
 
 function stripJsonComments(input: string): string {
   return input
@@ -19,11 +35,13 @@ function configExtends(value: unknown): string | undefined {
 export async function buildEnvironmentManifest(
   candidate: CandidateDescriptor,
   profile: TypeScriptProfile,
-  isolation: IsolationKind = candidate.isolation,
-  isolationIdentity = isolation === "TRUSTED_LOCAL"
-    ? `native:${process.platform}:${process.arch}`
-    : "container:unbound",
+  options: EnvironmentOptions = {},
 ): Promise<EnvironmentManifest> {
+  const isolation = options.isolation ?? candidate.isolation;
+  const isolationIdentity = options.isolationIdentity
+    ?? (isolation === "TRUSTED_LOCAL" ? `native:${process.platform}:${process.arch}` : "container:unbound");
+  const snapshot = options.snapshot ?? null;
+  const projection = options.projection ?? null;
   const limitations: string[] = [];
   const sourceConfigDigests: Array<{ path: string; sha256: string }> = [];
   const configPaths = candidate.entries
@@ -59,9 +77,13 @@ export async function buildEnvironmentManifest(
     }
   }
 
-  let dependencyState: "NONE" | "MISSING" = "NONE";
+  let dependencyState: EnvironmentManifest["dependency_snapshot"]["state"] = "NONE";
   const packageEntry = candidate.entries.find((entry) => entry.path === "package.json" && entry.kind === "file");
-  if (packageEntry) {
+  if (snapshot) {
+    // Binding a published snapshot answers the dependency question; whether the resulting
+    // projection is semantically complete is a separate question, answered by the gate below.
+    dependencyState = "BOUND";
+  } else if (packageEntry) {
     try {
       const packageJson = JSON.parse(await readFile(join(candidate.source_root, "package.json"), "utf8")) as Record<string, unknown>;
       const sections = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
@@ -71,11 +93,20 @@ export async function buildEnvironmentManifest(
       });
       if (declared) {
         dependencyState = "MISSING";
-        limitations.push("candidate declares package dependencies but no dependency snapshot is admitted in H1/H2");
+        limitations.push("candidate declares package dependencies but no dependency snapshot is admitted");
       }
     } catch {
       dependencyState = "MISSING";
       limitations.push("package.json could not be parsed for dependency admission");
+    }
+  }
+
+  // A snapshot can be admitted while the projection is still semantically incomplete: a
+  // workspace package whose declared type entry point is absent resolves to nothing, and
+  // every query that depends on it degrades with no other signal. That must not be VERIFIED.
+  if (projection) {
+    for (const finding of projection.entry_point_gate.findings) {
+      limitations.push(finding.limitation);
     }
   }
 
@@ -90,7 +121,17 @@ export async function buildEnvironmentManifest(
     isolation,
     isolation_identity: isolationIdentity,
     source_config_digests: sourceConfigDigests,
-    dependency_snapshot: { state: dependencyState } as { state: "NONE" | "MISSING" },
+    dependency_snapshot: snapshot
+      ? { state: dependencyState, snapshot_id: snapshot.snapshot_id, sha256: snapshot.tree_manifest_sha256 }
+      : { state: dependencyState },
+    projection: projection
+      ? {
+          projection_id: projection.projection_id,
+          projection_implementation: projection.projection_implementation,
+          entry_point_gate_state: projection.entry_point_gate.state,
+          entry_point_targets_checked: projection.entry_point_gate.targets_checked,
+        }
+      : null,
     external_inputs: [
       `typescript-language-server@${profile.server_package_version}:${profile.server_package_sha256}`,
       `typescript@${profile.typescript_version}:${profile.typescript_package_sha256}`,

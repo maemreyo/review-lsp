@@ -69,7 +69,17 @@ export interface EnvironmentManifest {
   isolation: IsolationKind;
   isolation_identity: string;
   source_config_digests: Array<{ path: string; sha256: string }>;
-  dependency_snapshot: { state: "NONE" | "BOUND" | "MISSING"; sha256?: string };
+  dependency_snapshot: {
+    state: "NONE" | "BOUND" | "MISSING" | "UNSUPPORTED";
+    snapshot_id?: string;
+    sha256?: string;
+  };
+  projection: {
+    projection_id: string;
+    projection_implementation: string;
+    entry_point_gate_state: "COMPLETE" | "INCOMPLETE";
+    entry_point_targets_checked: number;
+  } | null;
   external_inputs: string[];
   binding: BindingState;
   limitations: string[];
