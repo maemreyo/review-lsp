@@ -120,6 +120,83 @@ function requireMountSafeHostPath(path: string, label: string): void {
   }
 }
 
+
+export interface ContainerMount {
+  /** Absolute host path to expose. */
+  source: string;
+  /** Absolute path inside the container. */
+  destination: string;
+  label: string;
+}
+
+export interface ContainerRunSpec {
+  imageId: string;
+  operation: "hover" | "definition";
+  path: string;
+  line: number;
+  character: number;
+  /** Read-only mounts: candidate source or projection, dependency snapshot, derived artifacts. */
+  mounts: ContainerMount[];
+  descriptorPath: string;
+  /** Working root inside the container the language server is pointed at. */
+  containerRoot: string;
+}
+
+/**
+ * Builds the full `docker run` argument list for one semantic query.
+ *
+ * Kept pure and exported so the isolation itself is testable. The container profile is the
+ * only execution profile this project treats as enforced, and what makes it enforced is
+ * exactly this argument list: no network, read-only root, all capabilities dropped, no
+ * privilege escalation, a non-root user, bounded resources, and every mount read-only. A
+ * regression in any one of those is a silent loss of the property the profile is admitted
+ * for, so each is asserted rather than assumed.
+ */
+export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
+  requireMountSafeHostPath(spec.descriptorPath, "container descriptor path");
+  for (const mount of spec.mounts) {
+    requireMountSafeHostPath(mount.source, mount.label);
+    if (!mount.destination.startsWith("/")) {
+      throw new ReviewLspError(
+        "CONTAINER_ISOLATION_INVALID",
+        `${mount.label} destination must be absolute inside the container: ${JSON.stringify(mount.destination)}`,
+      );
+    }
+  }
+
+  const mountArgs: string[] = [];
+  for (const mount of spec.mounts) {
+    mountArgs.push("--mount", `type=bind,src=${mount.source},dst=${mount.destination},readonly`);
+  }
+
+  return [
+    "run",
+    "--rm",
+    "--network", "none",
+    "--read-only",
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
+    "--pids-limit", "256",
+    "--memory", "1024m",
+    "--cpus", "2",
+    "--user", "65532:65532",
+    "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=1777,size=268435456",
+    "--tmpfs", "/state:rw,nosuid,nodev,noexec,mode=1777,size=134217728",
+    ...mountArgs,
+    "--mount", `type=bind,src=${spec.descriptorPath},dst=/input/candidate.json,readonly`,
+    "--env", `REVIEW_LSP_CONTAINER_IMAGE_ID=${spec.imageId}`,
+    spec.imageId,
+    "__container-query",
+    "/input/candidate.json",
+    spec.operation,
+    spec.path,
+    String(spec.line),
+    String(spec.character),
+    "--state",
+    "/state",
+  ];
+}
+
 function assertContainerReceipt(input: {
   receipt: SemanticReceipt;
   environment: EnvironmentManifest;
@@ -187,11 +264,12 @@ export async function runDockerSemanticQuery(input: {
   image: string;
   stateDirectory: string;
   timeoutMs?: number;
+  /** Sealed dependency snapshot to expose read-only alongside the candidate. */
+  dependencyRoot?: string | undefined;
 }): Promise<DockerSemanticQueryResult> {
   const path = assertedRelativePath(input.path);
   const imageId = await resolveDockerImageId(input.image);
   const sourceRoot = await realpath(input.candidate.source_root);
-  requireMountSafeHostPath(sourceRoot, "candidate source root");
 
   const runRootParent = join(input.stateDirectory, "container-runs");
   await mkdir(runRootParent, { recursive: true, mode: 0o700 });
@@ -206,32 +284,21 @@ export async function runDockerSemanticQuery(input: {
   await writeFile(descriptorPath, `${JSON.stringify(containerCandidate, null, 2)}\n`, { mode: 0o444, flag: "wx" });
 
   try {
-    const args = [
-      "run",
-      "--rm",
-      "--network", "none",
-      "--read-only",
-      "--cap-drop", "ALL",
-      "--security-opt", "no-new-privileges",
-      "--pids-limit", "256",
-      "--memory", "1024m",
-      "--cpus", "2",
-      "--user", "65532:65532",
-      "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=1777,size=268435456",
-      "--tmpfs", "/state:rw,nosuid,nodev,noexec,mode=1777,size=134217728",
-      "--mount", `type=bind,src=${sourceRoot},dst=/candidate,readonly`,
-      "--mount", `type=bind,src=${descriptorPath},dst=/input/candidate.json,readonly`,
-      "--env", `REVIEW_LSP_CONTAINER_IMAGE_ID=${imageId}`,
+    const args = buildContainerRunArgs({
       imageId,
-      "__container-query",
-      "/input/candidate.json",
-      input.operation,
+      operation: input.operation,
       path,
-      String(input.line),
-      String(input.character),
-      "--state",
-      "/state",
-    ];
+      line: input.line,
+      character: input.character,
+      mounts: [
+        { source: sourceRoot, destination: "/candidate", label: "candidate source root" },
+        ...(input.dependencyRoot
+          ? [{ source: input.dependencyRoot, destination: "/dependencies", label: "dependency snapshot root" }]
+          : []),
+      ],
+      descriptorPath,
+      containerRoot: "/candidate",
+    });
     const { stdout } = await docker(args, { timeoutMs: input.timeoutMs ?? 120_000 });
     let parsed: unknown;
     try {

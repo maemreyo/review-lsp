@@ -111,13 +111,30 @@ export async function admitEngineArtifact(input: {
   return null;
 }
 
-/** Whether Docker can actually provide the container profile on this host. */
-async function dockerAvailable(): Promise<boolean> {
+/**
+ * Whether Docker can actually provide the container profile on this host.
+ *
+ * The probe asks for the *server* version, not the client's: a Docker CLI with no reachable
+ * daemon cannot confine anything, and treating its presence as enforcement would grant an
+ * admission the host cannot honour. The distinction between absent and unreachable is kept
+ * because it tells the operator what to do about it.
+ */
+async function probeDocker(): Promise<{ available: true } | { available: false; reason: string }> {
   try {
     await execFileAsync("docker", ["version", "--format", "{{.Server.Os}}"], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
+    return { available: true };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/ENOENT|not found/i.test(detail)) {
+      return { available: false, reason: "Docker is not installed, so the container execution profile cannot be provided" };
+    }
+    if (/daemon|Cannot connect/i.test(detail)) {
+      return {
+        available: false,
+        reason: "the Docker daemon is not reachable, so the container execution profile cannot enforce isolation",
+      };
+    }
+    return { available: false, reason: `the container execution profile is unavailable: ${detail.split("\n")[0]}` };
   }
 }
 
@@ -134,15 +151,20 @@ export async function resolveExecutionProfile(options: {
 } = {}): Promise<ExecutionProfile> {
   const platform = options.platform ?? process.platform;
 
-  if (options.preferContainer !== false && await dockerAvailable()) {
-    return {
-      schema_version: "review-lsp.execution-profile.v1",
-      kind: "CONTAINER_READ_ONLY",
-      enforced: true,
-      platform,
-      identity: `container:${platform}`,
-      reason: null,
-    };
+  let unavailableReason = `no enforced execution profile was requested on ${platform}`;
+  if (options.preferContainer !== false) {
+    const docker = await probeDocker();
+    if (docker.available) {
+      return {
+        schema_version: "review-lsp.execution-profile.v1",
+        kind: "CONTAINER_READ_ONLY",
+        enforced: true,
+        platform,
+        identity: `container:${platform}`,
+        reason: null,
+      };
+    }
+    unavailableReason = docker.reason;
   }
 
   // No enforced local sandbox profile is defined yet for any platform. Naming one here
@@ -153,7 +175,7 @@ export async function resolveExecutionProfile(options: {
     enforced: false,
     platform,
     identity: `native:${platform}:${process.arch}`,
-    reason: `no enforced execution profile is available on ${platform}; a candidate-selected engine would run with the host's own trust`,
+    reason: `no enforced execution profile is available: ${unavailableReason}; a candidate-selected engine would run with the host's own trust`,
   };
 }
 
