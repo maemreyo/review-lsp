@@ -113,6 +113,13 @@ export interface SemanticReceipt {
   execution_status: ExecutionStatus;
   source_binding: BindingState;
   environment_binding: BindingState;
+  /**
+   * How the answering engine relates to the project's declared toolchain.
+   *
+   * Recorded separately from `environment_binding` so that a reproducible environment is
+   * never read as evidence that the project's own semantics answered.
+   */
+  semantic_toolchain: SemanticToolchainEvidence;
   isolation: IsolationKind;
   result_scope: "SERVER_RESPONSE";
   limitations: string[];
@@ -288,4 +295,41 @@ export interface ProjectionDescriptor {
   dependency_mounts: string[];
   entry_point_gate: EntryPointGateResult;
   created_at: string;
+}
+
+export interface ResolvingProject {
+  state: "RESOLVED" | "UNRESOLVED";
+  config_path: string | null;
+  config_sha256: string | null;
+  project_root: string | null;
+}
+
+/**
+ * How the engine that answered relates to the toolchain the candidate project declares.
+ *
+ * `VERIFIED` describes the environment's reproducibility; it says nothing about whether the
+ * project's own semantics answered. That is this field's job, and the two must not be
+ * conflated.
+ */
+export type ToolchainAlignment = "EXACT_PROJECT" | "COMPATIBILITY_PROFILE" | "MISMATCH" | "UNKNOWN";
+
+export interface ToolchainAssessment {
+  alignment: ToolchainAlignment;
+  reason: string | null;
+}
+
+export interface SemanticToolchainEvidence {
+  resolving_project: ResolvingProject;
+  resolving_project_identity: string;
+  project_toolchain: {
+    typescript_version: string | null;
+    source: "DEPENDENCY_SNAPSHOT" | "MANIFEST_DECLARATION" | "ABSENT";
+  };
+  semantic_engine: {
+    implementation: string;
+    typescript_version: string;
+    is_project_admitted: boolean;
+  };
+  toolchain_alignment: ToolchainAlignment;
+  toolchain_alignment_reason: string | null;
 }

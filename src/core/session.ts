@@ -8,7 +8,14 @@ import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
-import { verifyProjectionSource } from "./projection.js";
+import { classifyProjectionUri, verifyProjectionSource } from "./projection.js";
+import {
+  alignmentBlocksStrongAdmission,
+  assessToolchainAlignment,
+  resolveProjectForDocument,
+  resolveProjectToolchain,
+  resolvingProjectIdentity,
+} from "./toolchain.js";
 import { persistReceipt } from "./receipts.js";
 import { verifyTypeScriptProfile } from "./profile.js";
 import type {
@@ -19,15 +26,22 @@ import type {
   IsolationKind,
   ProjectionDescriptor,
   SemanticReceipt,
+  SemanticToolchainEvidence,
   TypeScriptProfile,
 } from "./types.js";
 import { candidateSafeEnvironment, languageIdForPath, StdioLspDriver } from "../lsp/client.js";
 
 interface DefinitionBinding {
   uri: string;
-  classification: "SOURCE_CANDIDATE" | "TOOLCHAIN_TYPESCRIPT" | "TOOLCHAIN_SERVER" | "UNBOUND";
+  classification:
+    | "SOURCE_CANDIDATE"
+    | "DEPENDENCY_SNAPSHOT"
+    | "TOOLCHAIN_TYPESCRIPT"
+    | "TOOLCHAIN_SERVER"
+    | "UNBOUND";
   path?: string;
   sha256?: string;
+  reason?: string;
 }
 
 function admittedCandidatePath(candidate: CandidateDescriptor, path: string): string {
@@ -78,44 +92,65 @@ function resultUris(value: unknown): string[] {
   return [...new Set(uris)];
 }
 
+/**
+ * Binds a definition result to an admitted root.
+ *
+ * Classification goes through the projection-aware classifier so that a result reached
+ * lexically through the projection but really living in the sealed dependency snapshot is
+ * recognised as such. Without that, every correct definition into a dependency would look
+ * like an escape and downgrade the evidence.
+ *
+ * A candidate-source result is bound to the candidate entry's digest, not to the bytes found
+ * in the projection, so the binding remains a statement about the candidate.
+ */
 async function bindDefinitionUri(
   candidate: CandidateDescriptor,
   profile: TypeScriptProfile,
   uri: string,
+  roots: { executionRoot: string; dependencyRoot?: string | undefined },
 ): Promise<DefinitionBinding> {
-  let fsPath: string;
-  try {
-    const parsed = URI.parse(uri);
-    if (parsed.scheme !== "file") return { uri, classification: "UNBOUND" };
-    fsPath = await realpath(parsed.fsPath);
-  } catch {
-    return { uri, classification: "UNBOUND" };
+  const serverRoot = dirname(dirname(profile.server_entrypoint));
+  const classified = await classifyProjectionUri(uri, {
+    executionRoot: roots.executionRoot,
+    dependencyRoot: roots.dependencyRoot,
+    toolchainRoots: [profile.typescript_root, serverRoot],
+  });
+
+  if (classified.classification === "UNBOUND") {
+    return { uri, classification: "UNBOUND", ...(classified.reason ? { reason: classified.reason } : {}) };
   }
 
-  const candidateRoot = await realpath(candidate.source_root);
-  const candidateDelta = relative(candidateRoot, fsPath);
-  if (!candidateDelta.startsWith("..") && !isAbsolute(candidateDelta)) {
-    const normalized = candidateDelta.split("\\").join("/");
+  if (classified.classification === "CANDIDATE_SOURCE") {
+    const normalized = (classified.relative_path ?? "").split("\\").join("/");
     const entry = candidate.entries.find((item) => item.path === normalized && item.kind === "file");
     return entry
       ? { uri, classification: "SOURCE_CANDIDATE", path: normalized, sha256: entry.sha256 }
-      : { uri, classification: "UNBOUND" };
+      : { uri, classification: "UNBOUND", reason: "path is inside the source root but is not an admitted candidate file" };
   }
 
-  const typescriptRoot = await realpath(profile.typescript_root);
-  const tsDelta = relative(typescriptRoot, fsPath);
-  if (!tsDelta.startsWith("..") && !isAbsolute(tsDelta)) {
-    const bytes = await readFile(fsPath);
-    return { uri, classification: "TOOLCHAIN_TYPESCRIPT", path: tsDelta, sha256: sha256(bytes) };
+  if (classified.classification === "DEPENDENCY_SNAPSHOT") {
+    const bytes = await readFile(classified.realpath ?? classified.path).catch(() => undefined);
+    return bytes
+      ? { uri, classification: "DEPENDENCY_SNAPSHOT", path: classified.relative_path ?? "", sha256: sha256(bytes) }
+      : { uri, classification: "UNBOUND", reason: "dependency snapshot path could not be read" };
   }
 
-  const serverRoot = await realpath(dirname(dirname(profile.server_entrypoint)));
-  const serverDelta = relative(serverRoot, fsPath);
-  if (!serverDelta.startsWith("..") && !isAbsolute(serverDelta)) {
-    const bytes = await readFile(fsPath);
-    return { uri, classification: "TOOLCHAIN_SERVER", path: serverDelta, sha256: sha256(bytes) };
+  if (classified.classification === "TOOLCHAIN") {
+    const resolved = classified.realpath ?? classified.path;
+    const bytes = await readFile(resolved).catch(() => undefined);
+    if (!bytes) return { uri, classification: "UNBOUND", reason: "toolchain path could not be read" };
+    const typescriptRoot = await realpath(profile.typescript_root).catch(() => profile.typescript_root);
+    const tsDelta = relative(typescriptRoot, resolved);
+    const inTypeScript = !tsDelta.startsWith("..") && !isAbsolute(tsDelta);
+    return {
+      uri,
+      classification: inTypeScript ? "TOOLCHAIN_TYPESCRIPT" : "TOOLCHAIN_SERVER",
+      path: classified.relative_path ?? "",
+      sha256: sha256(bytes),
+    };
   }
-  return { uri, classification: "UNBOUND" };
+
+  return { uri, classification: "UNBOUND", reason: "result is not bound to an admitted root" };
 }
 
 export class SemanticSession {
@@ -132,6 +167,7 @@ export class SemanticSession {
     readonly isolation: IsolationKind,
     private readonly driver: StdioLspDriver,
     private readonly projection: ProjectionDescriptor | null = null,
+    private readonly snapshot: DependencySnapshotDescriptor | null = null,
   ) {
     this.sessionId = contentId("sess", {
       candidate_id: candidate.candidate_id,
@@ -196,7 +232,16 @@ export class SemanticSession {
       input.requestTimeoutMs ?? 10_000,
     );
     await driver.start();
-    return new SemanticSession(input.candidate, input.profile, input.stateDirectory, environment, isolation, driver, projection);
+    return new SemanticSession(
+      input.candidate,
+      input.profile,
+      input.stateDirectory,
+      environment,
+      isolation,
+      driver,
+      projection,
+      input.snapshot ?? null,
+    );
   }
 
   async candidateInfo(): Promise<{
@@ -265,10 +310,45 @@ export class SemanticSession {
       languageId,
     });
 
+    // The engine that answers is selected per document's owning project, so alignment is
+    // assessed there rather than once for the whole repository.
+    const resolvingProject = resolveProjectForDocument(this.candidate, input.path);
+    const projectToolchain = await resolveProjectToolchain({
+      candidate: this.candidate,
+      snapshot: this.snapshot,
+      projectRoot: resolvingProject.project_root,
+    });
+    const assessment = assessToolchainAlignment({
+      projectVersion: projectToolchain.version,
+      projectVersionSource: projectToolchain.source,
+      engineVersion: this.profile.typescript_version,
+      // Review-LSP's own bundled TypeScript answers today. Executing the candidate's engine
+      // is a separate trust decision that requires enforced isolation, so this stays false
+      // rather than quietly claiming project alignment that was never established.
+      engineIsProjectAdmitted: false,
+    });
+    const semanticToolchain: SemanticToolchainEvidence = {
+      resolving_project: resolvingProject,
+      resolving_project_identity: resolvingProjectIdentity(resolvingProject),
+      project_toolchain: { typescript_version: projectToolchain.version, source: projectToolchain.source },
+      semantic_engine: {
+        implementation: "typescript-language-server",
+        typescript_version: this.profile.typescript_version,
+        is_project_admitted: false,
+      },
+      toolchain_alignment: assessment.alignment,
+      toolchain_alignment_reason: assessment.reason,
+    };
+
     let result: unknown;
     let durationMs: number;
     let environmentBinding: BindingState = this.environment.binding;
     const limitations = [...this.environment.limitations];
+
+    if (alignmentBlocksStrongAdmission(assessment.alignment)) {
+      environmentBinding = "PARTIAL";
+      if (assessment.reason) limitations.push(assessment.reason);
+    }
 
     if (operation === "hover") {
       const response = await this.driver.hover(document, input.line, input.character);
@@ -276,10 +356,18 @@ export class SemanticSession {
       durationMs = response.durationMs;
     } else {
       const response = await this.driver.definition(document, input.line, input.character);
-      const bindings = await Promise.all(resultUris(response.value).map((uri) => bindDefinitionUri(this.candidate, this.profile, uri)));
+      const bindings = await Promise.all(resultUris(response.value).map((uri) => bindDefinitionUri(
+        this.candidate,
+        this.profile,
+        uri,
+        {
+          executionRoot: this.projection?.execution_root ?? this.candidate.source_root,
+          dependencyRoot: this.snapshot?.dependency_root,
+        },
+      )));
       if (bindings.some((binding) => binding.classification === "UNBOUND")) {
         environmentBinding = "PARTIAL";
-        limitations.push("definition result includes URI outside admitted candidate/toolchain roots");
+        limitations.push("definition result includes a URI outside every admitted root");
       }
       result = { server_response: response.value, bindings };
       durationMs = response.durationMs;
@@ -320,6 +408,7 @@ export class SemanticSession {
       },
       request: { line: input.line, character: input.character },
       execution_status: "OK",
+      semantic_toolchain: semanticToolchain,
       source_binding: "VERIFIED",
       environment_binding: environmentBinding,
       isolation: this.isolation,

@@ -12,6 +12,12 @@ export {
 export { scanDependencyTree } from "./core/dependency-tree.js";
 export { runEntryPointGate } from "./core/entry-points.js";
 export {
+  alignmentBlocksStrongAdmission,
+  assessToolchainAlignment,
+  resolveProjectForDocument,
+  resolveProjectToolchain,
+} from "./core/toolchain.js";
+export {
   buildProjection,
   classifyProjectionUri,
   projectionDirectory,
