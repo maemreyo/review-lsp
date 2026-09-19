@@ -108,6 +108,8 @@ export interface SemanticReceipt {
     version: number;
     language_id: string;
     position_encoding: "utf-16";
+    /** What the candidate source holds at the requested position. */
+    context: CoordinateContext;
   };
   request: { line: number; character: number };
   execution_status: ExecutionStatus;
@@ -414,4 +416,25 @@ export interface RuntimeKey {
    */
   resolving_project_identity: string | null;
   isolation: IsolationKind;
+}
+
+/**
+ * What the bound candidate source actually holds at the requested position.
+ *
+ * Returned with every answer so a caller can see what it asked about. Provenance cannot
+ * detect a mis-aimed question, because a mis-aimed question has perfectly sound provenance.
+ */
+export interface CoordinateContext {
+  line_text: string;
+  line_sha256: string;
+  /** Identifier-ish run containing the requested column, or null when there is none. */
+  token: string | null;
+  line_length: number;
+}
+
+/** What the caller says it is aiming at. Any stated field that does not match fails the request. */
+export interface CoordinateExpectation {
+  token?: string;
+  line_sha256?: string;
+  line_contains?: string;
 }

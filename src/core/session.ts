@@ -8,6 +8,7 @@ import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
+import { assertCoordinateExpectation, buildCoordinateContext } from "./coordinate.js";
 import { classifyProjectionUri, verifyProjectionSource } from "./projection.js";
 import { admitEngineArtifact, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
 import {
@@ -22,6 +23,7 @@ import { verifyTypeScriptProfile } from "./profile.js";
 import type {
   BindingState,
   CandidateDescriptor,
+  CoordinateExpectation,
   DependencySnapshotDescriptor,
   EnvironmentManifest,
   ExecutionProfile,
@@ -32,6 +34,19 @@ import type {
   TypeScriptProfile,
 } from "./types.js";
 import { candidateSafeEnvironment, languageIdForPath, StdioLspDriver } from "../lsp/client.js";
+
+export interface SemanticQueryInput {
+  path: string;
+  line: number;
+  character: number;
+  /**
+   * Optional statement of what the caller is aiming at.
+   *
+   * A guard on the question, never an upgrade to the evidence: matching it does not make an
+   * answer stronger, and a semantically irrelevant result stays irrelevant.
+   */
+  expect?: CoordinateExpectation;
+}
 
 interface DefinitionBinding {
   uri: string;
@@ -273,11 +288,11 @@ export class SemanticSession {
     };
   }
 
-  async hover(input: { path: string; line: number; character: number }): Promise<SemanticReceipt> {
+  async hover(input: SemanticQueryInput): Promise<SemanticReceipt> {
     return this.query("hover", input);
   }
 
-  async definition(input: { path: string; line: number; character: number }): Promise<SemanticReceipt> {
+  async definition(input: SemanticQueryInput): Promise<SemanticReceipt> {
     return this.query("definition", input);
   }
 
@@ -289,7 +304,7 @@ export class SemanticSession {
 
   private async query(
     operation: "hover" | "definition",
-    input: { path: string; line: number; character: number },
+    input: SemanticQueryInput,
   ): Promise<SemanticReceipt> {
     this.ensureOpen();
     if (!Number.isSafeInteger(input.line) || input.line < 0 || !Number.isSafeInteger(input.character) || input.character < 0) {
@@ -313,6 +328,14 @@ export class SemanticSession {
       );
     }
     const documentBytes = await readCandidateFile(this.candidate, input.path);
+    // Checked before the server is asked anything: a mis-aimed question should fail as a
+    // question, not produce an authoritative-looking answer about the wrong thing.
+    const coordinateContext = buildCoordinateContext({
+      text: documentBytes.bytes.toString("utf8"),
+      line: input.line,
+      character: input.character,
+    });
+    assertCoordinateExpectation(coordinateContext, input.expect);
     const document = await this.driver.openDocument({
       path: absolute,
       text: documentBytes.bytes.toString("utf8"),
@@ -438,6 +461,7 @@ export class SemanticSession {
         version: document.version,
         language_id: document.languageId,
         position_encoding: "utf-16",
+        context: coordinateContext,
       },
       request: { line: input.line, character: input.character },
       execution_status: "OK",

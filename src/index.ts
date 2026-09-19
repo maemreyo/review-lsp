@@ -10,6 +10,7 @@ export {
   verifyDependencySnapshot,
 } from "./core/dependency-snapshot.js";
 export { scanDependencyTree } from "./core/dependency-tree.js";
+export { assertCoordinateExpectation, buildCoordinateContext } from "./core/coordinate.js";
 export { runEntryPointGate } from "./core/entry-points.js";
 export { runtimeKeyFor, runtimeKeyId, SemanticRuntimeManager } from "./core/runtime.js";
 export {

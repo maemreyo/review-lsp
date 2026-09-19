@@ -38,6 +38,7 @@ describe("receipt integrity", () => {
         version: 1,
         language_id: "typescript",
         position_encoding: "utf-16",
+      context: { line_text: "export const value = 1;", line_sha256: "5".repeat(64), token: "value", line_length: 23 },
       },
       request: { line: 0, character: 0 },
       execution_status: "OK",
