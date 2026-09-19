@@ -7,6 +7,13 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    ignore:
+      # Major toolchain/runtime upgrades are reviewed explicitly because they can
+      # change the semantic profile, supported Node range, or public API.
+      # Dependabot security updates are not suppressed by this version-update rule.
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
@@ -15,3 +22,8 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    ignore:
+      # Release-verifier major upgrades require an explicit supply-chain review.
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major

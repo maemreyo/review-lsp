@@ -4,6 +4,17 @@ All notable public changes to Review-LSP are recorded here.
 
 The project is currently prerelease software. Until 1.0, minor versions may include breaking changes when the evidence model or public surface needs to evolve.
 
+## Unreleased
+
+### Security
+
+- Updated Vitest development tooling to 4.1.11, the first patched 4.x release for GHSA-82fw-gwwq-j7x9 / CVE-2026-84373. This is a repository-development dependency, not a runtime dependency installed by Review-LSP consumers.
+
+### Maintenance
+
+- Updated Zod from 4.6.1 to 4.6.5 after the full compatibility/container CI matrix passed.
+- Dependabot now leaves semver-major npm and GitHub Actions upgrades for explicit review while continuing to surface patch/minor and security updates.
+
 ## 0.1.0-alpha.1 — 2026-09-18
 
 First public alpha.
