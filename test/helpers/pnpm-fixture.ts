@@ -42,6 +42,8 @@ export interface PnpmFixtureShape {
   withPatch?: boolean;
   /** References a patch that is not present in the candidate. */
   withDanglingPatch?: boolean;
+  /** Sets the workspace package's `types` field, e.g. to build output absent from the candidate. */
+  workspaceTypesTarget?: string;
 }
 
 export interface PnpmFixture {
@@ -94,6 +96,7 @@ export async function createPnpmFixture(root: string, shape: PnpmFixtureShape = 
     version: "0.0.0",
     type: "module",
     main: "./src/index.ts",
+    ...(shape.workspaceTypesTarget ? { types: shape.workspaceTypesTarget } : {}),
   }, null, 2)}\n`);
   await writeFile(join(repo, "packages", "app", "src", "index.ts"), "export const app = 1;\n");
 

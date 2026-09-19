@@ -43,7 +43,9 @@ async function seedCorepackCache(state: string): Promise<boolean> {
     try {
       const versions = await readdir(join(source, "v1", "pnpm"));
       if (!versions.includes("10.20.0")) continue;
-      await cp(source, target, { recursive: true });
+      // Copy only the pinned version. The whole cache holds every package manager the host
+      // has ever used, and copying it dominated this test's runtime.
+      await cp(join(source, "v1", "pnpm", "10.20.0"), join(target, "v1", "pnpm", "10.20.0"), { recursive: true });
       return true;
     } catch {
       // Try the next candidate location.

@@ -10,6 +10,15 @@ export {
   verifyDependencySnapshot,
 } from "./core/dependency-snapshot.js";
 export { scanDependencyTree } from "./core/dependency-tree.js";
+export { runEntryPointGate } from "./core/entry-points.js";
+export {
+  buildProjection,
+  classifyProjectionUri,
+  projectionDirectory,
+  projectionDocumentUri,
+  removeProjection,
+  verifyProjectionSource,
+} from "./core/projection.js";
 export { candidateDescriptorPath, loadCandidateDescriptor, prepareCandidate, readCandidateFile, removeCandidate, verifyCandidateIntegrity } from "./core/candidate.js";
 export { buildEnvironmentManifest } from "./core/environment.js";
 export { containerImageIdFromEnvironment, parseLinuxMountInfo, resolveDockerImageId, runDockerSemanticQuery, verifyLinuxReadOnlyMount } from "./core/container.js";

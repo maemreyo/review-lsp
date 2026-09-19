@@ -220,3 +220,62 @@ export interface DependencySnapshotDescriptor {
   materialization_method: string;
   created_at: string;
 }
+
+export interface EntryPointFinding {
+  manifest_path: string;
+  package_name: string | null;
+  field: string;
+  declared_target: string;
+  limitation: string;
+}
+
+/**
+ * Whether every workspace package's declared semantic entry point is actually present.
+ *
+ * `INCOMPLETE` must prevent VERIFIED: a linked-but-empty entry point makes TypeScript resolve
+ * that package to nothing, which degrades queries without any other signal.
+ */
+export interface EntryPointGateResult {
+  schema_version: "review-lsp.entry-point-gate.v1";
+  state: "COMPLETE" | "INCOMPLETE";
+  targets_checked: number;
+  findings: EntryPointFinding[];
+}
+
+export type ProjectionUriClass =
+  | "CANDIDATE_SOURCE"
+  | "DEPENDENCY_SNAPSHOT"
+  | "DERIVED_WORKSPACE_ARTIFACT"
+  | "TOOLCHAIN"
+  | "UNBOUND";
+
+export interface ProjectionUriClassification {
+  uri: string;
+  path: string;
+  realpath: string | null;
+  classification: ProjectionUriClass;
+  /** Path relative to the admitted root, when one was identified. */
+  relative_path?: string;
+  reason?: string;
+}
+
+/**
+ * An execution view built from an exact candidate plus an admitted dependency snapshot.
+ *
+ * The candidate remains the source authority: every source path in the projection must hash
+ * back to its candidate entry, and the projection is what the language server is pointed at.
+ */
+export interface ProjectionDescriptor {
+  schema_version: "review-lsp.projection.v1";
+  projection_id: string;
+  projection_implementation: string;
+  candidate_id: string;
+  source_manifest_sha256: string;
+  dependency_snapshot_id: string | null;
+  dependency_tree_manifest_sha256: string | null;
+  isolation: IsolationKind;
+  execution_root: string;
+  dependency_mounts: string[];
+  entry_point_gate: EntryPointGateResult;
+  created_at: string;
+}
