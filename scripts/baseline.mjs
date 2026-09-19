@@ -12,7 +12,7 @@
  * generated; its commit OID is stable across machines and runs.
  */
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cpus, loadavg, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -69,8 +69,10 @@ const label = option(args, "--label") ?? (repoOption ? "external-repo" : "monore
 const outPath = option(args, "--out");
 const skipSemantic = flag(args, "--skip-semantic");
 const iterations = Number(option(args, "--iterations") ?? "5");
+const prepareSamples = Number(option(args, "--prepare-samples") ?? "3");
 if (repoOption && !commitOption) throw new Error("--repo requires --commit");
 if (!Number.isSafeInteger(iterations) || iterations <= 0) throw new Error("--iterations must be a positive integer");
+if (!Number.isSafeInteger(prepareSamples) || prepareSamples <= 0) throw new Error("--prepare-samples must be a positive integer");
 
 const root = await mkdtemp(join(tmpdir(), "review-lsp-baseline-"));
 const coldState = join(root, "state-cold");
@@ -89,22 +91,36 @@ try {
     commit = fixture.commit;
   }
 
-  // Cold: nothing retained in the state directory yet.
-  const coldStart = performance.now();
-  candidate = await prepareCandidate({ repo, commit, stateDirectory: coldState });
-  const coldPrepareMs = performance.now() - coldStart;
+  // Preparation is sampled rather than timed once: this host shows heavy, bursty background
+  // load, and a single sample cannot distinguish an implementation change from contention.
+  // `integrity_verification` is pure file I/O over the same bytes in every implementation,
+  // so it doubles as a contention proxy when comparing two recorded runs.
+  const coldSamples = [];
+  const warmSamples = [];
+  const verifySamples = [];
 
-  // Warm: the identical candidate is already retained under the same state directory.
-  const warmStart = performance.now();
-  const warm = await prepareCandidate({ repo, commit, stateDirectory: coldState });
-  const warmPrepareMs = performance.now() - warmStart;
-  if (warm.candidate_id !== candidate.candidate_id) {
-    throw new Error("warm prepare returned a different candidate identity than cold prepare");
+  for (let sample = 0; sample < prepareSamples; sample += 1) {
+    const sampleState = join(root, `state-${sample}`);
+
+    const coldStart = performance.now();
+    const cold = await prepareCandidate({ repo, commit, stateDirectory: sampleState });
+    coldSamples.push(performance.now() - coldStart);
+
+    // Warm: the identical candidate is already retained under the same state directory.
+    const warmStart = performance.now();
+    const warm = await prepareCandidate({ repo, commit, stateDirectory: sampleState });
+    warmSamples.push(performance.now() - warmStart);
+    if (warm.candidate_id !== cold.candidate_id || warm.source_manifest_sha256 !== cold.source_manifest_sha256) {
+      throw new Error("warm prepare returned a different candidate identity than cold prepare");
+    }
+
+    const verifyStart = performance.now();
+    await verifyCandidateIntegrity(cold);
+    verifySamples.push(performance.now() - verifyStart);
+
+    if (candidate) await removeCandidate(cold).catch(() => undefined);
+    else candidate = cold;
   }
-
-  const verifyStart = performance.now();
-  await verifyCandidateIntegrity(candidate);
-  const verifyMs = performance.now() - verifyStart;
 
   const trackedBytes = candidate.entries.reduce((total, entry) => total + entry.byte_count, 0);
   const kinds = candidate.entries.reduce((counts, entry) => {
@@ -158,26 +174,44 @@ try {
     platform: process.platform,
     arch: process.arch,
     node: process.version,
-    // Identity fields below must survive every ingestion optimization unchanged.
     identity: {
-      candidate_id: candidate.candidate_id,
-      commit_oid: candidate.commit_oid,
-      tree_oid: candidate.tree_oid,
-      git_object_format: candidate.git_object_format,
-      source_manifest_sha256: candidate.source_manifest_sha256,
-      schema_version: candidate.schema_version,
-      isolation: candidate.isolation,
-      entry_count: candidate.entries.length,
-      tracked_bytes: trackedBytes,
-      entry_kinds: kinds,
+      // Derived purely from candidate content. These must survive every ingestion change
+      // unchanged, and they are the fields a parity check compares across runs and hosts.
+      content: {
+        schema_version: candidate.schema_version,
+        git_object_format: candidate.git_object_format,
+        commit_oid: candidate.commit_oid,
+        tree_oid: candidate.tree_oid,
+        source_manifest_sha256: candidate.source_manifest_sha256,
+        isolation: candidate.isolation,
+        entry_count: candidate.entries.length,
+        tracked_bytes: trackedBytes,
+        entry_kinds: kinds,
+      },
+      // `repository_identity` hashes the absolute git directory, and `candidate_id` binds it.
+      // Both are therefore stable for a given repository location but differ between a
+      // temporary fixture checkout and any other path, so neither can be compared across
+      // runs. Recorded for traceability, excluded from the parity contract.
+      location_bound: {
+        candidate_id: candidate.candidate_id,
+        repository_identity: candidate.repository_identity,
+      },
     },
+    parity_contract: "identity.content must match exactly; identity.location_bound is path-derived and is not comparable across runs",
     fixture: fixture
       ? { kind: "generated-monorepo", deterministic_commit: fixture.commit }
       : { kind: "external-repo", commit: candidate.commit_oid },
     candidate_preparation: {
-      cold_prepare_ms: round(coldPrepareMs),
-      warm_prepare_ms: round(warmPrepareMs),
-      integrity_verification_ms: round(verifyMs),
+      samples: prepareSamples,
+      cold_prepare: summary(coldSamples),
+      warm_prepare: summary(warmSamples),
+      integrity_verification: summary(verifySamples),
+    },
+    host_load: {
+      loadavg_1m: Math.round(loadavg()[0] * 100) / 100,
+      loadavg_5m: Math.round(loadavg()[1] * 100) / 100,
+      cpus: cpus().length,
+      note: "recorded after the run; compare integrity_verification between records before comparing preparation cost",
     },
     dependency_snapshot: {
       cold_ms: null,

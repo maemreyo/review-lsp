@@ -20,6 +20,7 @@ import { execFile } from "node:child_process";
 
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { ReviewLspError } from "./errors.js";
+import { catFileBatch, GIT_ENV } from "./git-batch.js";
 import type { CandidateDescriptor, CandidateEntry } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -50,9 +51,7 @@ async function git(repo: string, args: string[]): Promise<Buffer> {
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         HOME: process.env.HOME ?? "",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_NO_REPLACE_OBJECTS: "1",
+        ...GIT_ENV,
       },
     });
     return stdout;
@@ -111,27 +110,34 @@ function validateSymlinks(entries: RawEntry[]): void {
   }
 }
 
-async function rawEntries(
-  repo: string,
-  commitOid: string,
-  limits: Required<CandidatePreparationLimits>,
-): Promise<RawEntry[]> {
-  const listing = await git(repo, ["ls-tree", "-rz", "-r", "--full-tree", commitOid]);
-  const records = listing.toString("utf8").split("\0").filter(Boolean);
+interface ListedEntry {
+  path: string;
+  mode: string;
+  oid: string;
+  kind: "file" | "symlink";
+  /** Size as declared by `git ls-tree -l`, observed independently of the object payload. */
+  declaredSize: number;
+}
+
+function parseTreeListing(listing: string, limits: Required<CandidatePreparationLimits>): ListedEntry[] {
+  const records = listing.split("\0").filter(Boolean);
   if (records.length > limits.max_entries) {
     throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate has ${records.length} entries; limit is ${limits.max_entries}`);
   }
-  const result: RawEntry[] = [];
+  const listed: ListedEntry[] = [];
   const caseKeys = new Map<string, string>();
   let totalBytes = 0;
 
   for (const record of records) {
     const tab = record.indexOf("\t");
     if (tab < 0) throw new ReviewLspError("CANDIDATE_UNSUPPORTED", "git ls-tree record lacks a path separator");
-    const meta = record.slice(0, tab).split(" ");
+    // `-l` right-aligns the size field, so collapse the run of separating spaces.
+    const meta = record.slice(0, tab).split(" ").filter(Boolean);
     const path = validatedPath(record.slice(tab + 1));
-    const [mode, type, oid] = meta;
-    if (!mode || !type || !oid) throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `invalid git ls-tree metadata for ${path}`);
+    const [mode, type, oid, rawSize] = meta;
+    if (!mode || !type || !oid || !rawSize) {
+      throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `invalid git ls-tree metadata for ${path}`);
+    }
     const caseKey = path.toLocaleLowerCase("en-US");
     const prior = caseKeys.get(caseKey);
     if (prior && prior !== path) {
@@ -145,25 +151,62 @@ async function rawEntries(
     if (type !== "blob" || !["100644", "100755", "120000"].includes(mode)) {
       throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `unsupported Git entry ${path}: mode=${mode} type=${type}`);
     }
-    const byteCount = Number((await git(repo, ["cat-file", "-s", oid])).toString("utf8").trim());
-    if (!Number.isSafeInteger(byteCount) || byteCount < 0) {
+    if (!/^[0-9]+$/.test(rawSize)) {
       throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `invalid blob size for ${path}`);
     }
-    if (byteCount > limits.max_file_bytes) {
-      throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate file ${path} is ${byteCount} bytes; limit is ${limits.max_file_bytes}`);
+    const declaredSize = Number(rawSize);
+    if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
+      throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `invalid blob size for ${path}`);
     }
-    totalBytes += byteCount;
+    if (declaredSize > limits.max_file_bytes) {
+      throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate file ${path} is ${declaredSize} bytes; limit is ${limits.max_file_bytes}`);
+    }
+    totalBytes += declaredSize;
     if (totalBytes > limits.max_total_bytes) {
       throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate tracked bytes exceed ${limits.max_total_bytes}`);
     }
-    const bytes = await git(repo, ["cat-file", "blob", oid]);
-    if (bytes.byteLength !== byteCount) {
-      throw new ReviewLspError("CANDIDATE_INTEGRITY_INVALID", `blob size changed while reading ${path}`);
+
+    listed.push({ path, mode, oid, kind: mode === "120000" ? "symlink" : "file", declaredSize });
+  }
+
+  return listed;
+}
+
+async function rawEntries(
+  repo: string,
+  commitOid: string,
+  limits: Required<CandidatePreparationLimits>,
+): Promise<RawEntry[]> {
+  // One tree enumeration and one object stream, instead of two `git cat-file` processes per
+  // blob. Every rejection rule below is evaluated on the same values as before; the size
+  // cross-check gains a third independent observation rather than losing one.
+  const listing = await git(repo, ["ls-tree", "-rz", "-r", "-l", "--full-tree", commitOid]);
+  const listed = parseTreeListing(listing.toString("utf8"), limits);
+
+  // Identical OIDs are identical bytes, so a repository that stores the same blob at many
+  // paths is read once; each path still cross-checks its own declared size against it.
+  const requested = [...new Set(listed.map((entry) => entry.oid))];
+  const payloads = new Map<string, { headerSize: number; bytes: Buffer }>();
+  await catFileBatch(repo, requested, ({ oid, headerSize, bytes }) => {
+    payloads.set(oid, { headerSize, bytes });
+  });
+
+  const result: RawEntry[] = [];
+  for (const entry of listed) {
+    const payload = payloads.get(entry.oid);
+    if (!payload) {
+      throw new ReviewLspError("CANDIDATE_INTEGRITY_INVALID", `git object ${entry.oid} for ${entry.path} was not returned`);
     }
-    if (mode !== "120000" && bytes.subarray(0, 200).toString("utf8").startsWith(LFS_PREFIX)) {
-      throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `unresolved Git LFS pointer at ${path}`);
+    if (entry.declaredSize !== payload.headerSize || payload.headerSize !== payload.bytes.byteLength) {
+      throw new ReviewLspError(
+        "CANDIDATE_INTEGRITY_INVALID",
+        `blob size disagreement for ${entry.path}: tree=${entry.declaredSize} header=${payload.headerSize} payload=${payload.bytes.byteLength}`,
+      );
     }
-    result.push({ path, mode, oid, kind: mode === "120000" ? "symlink" : "file", bytes });
+    if (entry.kind !== "symlink" && payload.bytes.subarray(0, 200).toString("utf8").startsWith(LFS_PREFIX)) {
+      throw new ReviewLspError("CANDIDATE_UNSUPPORTED", `unresolved Git LFS pointer at ${entry.path}`);
+    }
+    result.push({ path: entry.path, mode: entry.mode, oid: entry.oid, kind: entry.kind, bytes: payload.bytes });
   }
 
   validateSymlinks(result);
@@ -238,6 +281,97 @@ function assertCandidateDescriptorIdentity(candidate: CandidateDescriptor): void
   }
 }
 
+/**
+ * Maps an exact (repository, commit) pair to a previously retained candidate.
+ *
+ * A commit OID fixes its tree, which fixes every path, mode and blob OID, which fixes the
+ * manifest and therefore the content-addressed candidate identity. That makes the lookup a
+ * sound shortcut past re-reading every blob — but only a shortcut: the retained candidate is
+ * still fully verified, and its manifest is still re-checked against the caller's limits,
+ * before it can be used.
+ */
+function retainedIndexPath(stateDirectory: string, repositoryIdentity: string, commitOid: string): string {
+  return join(stateDirectory, "candidates", "index", `${repositoryIdentity}-${commitOid}.json`);
+}
+
+function assertManifestWithinLimits(entries: CandidateEntry[], limits: Required<CandidatePreparationLimits>): void {
+  if (entries.length > limits.max_entries) {
+    throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate has ${entries.length} entries; limit is ${limits.max_entries}`);
+  }
+  let totalBytes = 0;
+  for (const entry of entries) {
+    if (entry.byte_count > limits.max_file_bytes) {
+      throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate file ${entry.path} is ${entry.byte_count} bytes; limit is ${limits.max_file_bytes}`);
+    }
+    totalBytes += entry.byte_count;
+    if (totalBytes > limits.max_total_bytes) {
+      throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `candidate tracked bytes exceed ${limits.max_total_bytes}`);
+    }
+  }
+}
+
+async function loadRetainedCandidate(
+  stateDirectory: string,
+  repositoryIdentity: string,
+  commitOid: string,
+  treeOid: string,
+  objectFormat: string,
+  limits: Required<CandidatePreparationLimits>,
+): Promise<CandidateDescriptor | undefined> {
+  let candidateId: string;
+  try {
+    const index = JSON.parse(await readFile(retainedIndexPath(stateDirectory, repositoryIdentity, commitOid), "utf8")) as {
+      candidate_id?: unknown;
+    };
+    if (typeof index.candidate_id !== "string" || !/^cand_[0-9a-f]{32}$/.test(index.candidate_id)) return undefined;
+    candidateId = index.candidate_id;
+  } catch {
+    return undefined;
+  }
+
+  let descriptor: CandidateDescriptor;
+  try {
+    descriptor = JSON.parse(await readFile(join(stateDirectory, "candidates", candidateId, "candidate.json"), "utf8")) as CandidateDescriptor;
+  } catch {
+    return undefined;
+  }
+
+  // A stale or rewritten index must never widen what counts as the requested candidate.
+  if (
+    descriptor.candidate_id !== candidateId ||
+    descriptor.commit_oid !== commitOid ||
+    descriptor.tree_oid !== treeOid ||
+    descriptor.repository_identity !== repositoryIdentity ||
+    descriptor.git_object_format !== objectFormat ||
+    descriptor.schema_version !== "review-lsp.candidate.v1" ||
+    !Array.isArray(descriptor.entries)
+  ) {
+    return undefined;
+  }
+
+  assertManifestWithinLimits(descriptor.entries, limits);
+  await verifyCandidateIntegrity(descriptor);
+  return descriptor;
+}
+
+async function writeRetainedIndex(
+  stateDirectory: string,
+  repositoryIdentity: string,
+  commitOid: string,
+  candidateId: string,
+): Promise<void> {
+  const path = retainedIndexPath(stateDirectory, repositoryIdentity, commitOid);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  await writeFile(temporary, `${JSON.stringify({
+    schema_version: "review-lsp.candidate-index.v1",
+    repository_identity: repositoryIdentity,
+    commit_oid: commitOid,
+    candidate_id: candidateId,
+  }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  await rename(temporary, path);
+}
+
 export async function prepareCandidate(input: {
   repo: string;
   commit: string;
@@ -260,6 +394,10 @@ export async function prepareCandidate(input: {
       throw new ReviewLspError("CANDIDATE_RESOURCE_LIMIT", `${name} must be a positive safe integer`);
     }
   }
+  const repositoryIdentity = sha256(canonicalJson({ git_dir: gitDir, object_format: objectFormat }));
+  const retained = await loadRetainedCandidate(input.stateDirectory, repositoryIdentity, commitOid, treeOid, objectFormat, limits);
+  if (retained) return retained;
+
   const entries = await rawEntries(repo, commitOid, limits);
   const manifestEntries: CandidateEntry[] = entries.map((entry) => ({
     path: entry.path,
@@ -271,7 +409,6 @@ export async function prepareCandidate(input: {
     ...(entry.kind === "symlink" ? { symlink_target: entry.bytes.toString("utf8") } : {}),
   }));
   const sourceManifestSha256 = sha256(canonicalJson(manifestEntries));
-  const repositoryIdentity = sha256(canonicalJson({ git_dir: gitDir, object_format: objectFormat }));
   const stable = {
     schema_version: "review-lsp.candidate.v1" as const,
     repository_identity: repositoryIdentity,
@@ -298,6 +435,7 @@ export async function prepareCandidate(input: {
       throw new ReviewLspError("CANDIDATE_INTEGRITY_INVALID", `stored candidate ${candidateId} does not match requested identity`);
     }
     await verifyCandidateIntegrity(existing);
+    await writeRetainedIndex(input.stateDirectory, repositoryIdentity, commitOid, candidateId);
     return existing;
   } catch (error) {
     if (error instanceof ReviewLspError) throw error;
@@ -322,6 +460,8 @@ export async function prepareCandidate(input: {
     await writeFile(join(temporary, "candidate.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, candidateDirectory);
     await verifyCandidateIntegrity(descriptor);
+    // Published last: an index entry must never name a candidate that is not fully retained.
+    await writeRetainedIndex(input.stateDirectory, repositoryIdentity, commitOid, candidateId);
     return descriptor;
   } catch (error) {
     await chmod(join(temporary, "source"), 0o700).catch(() => undefined);
@@ -412,6 +552,8 @@ async function makeOwnerWritable(root: string): Promise<void> {
 
 export async function removeCandidate(candidate: CandidateDescriptor): Promise<void> {
   const candidateDirectory = dirname(candidate.source_root);
+  const stateDirectory = dirname(dirname(candidateDirectory));
+  await rm(retainedIndexPath(stateDirectory, candidate.repository_identity, candidate.commit_oid), { force: true }).catch(() => undefined);
   await makeOwnerWritable(candidateDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
   });

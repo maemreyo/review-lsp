@@ -51,12 +51,19 @@ function option(args: string[], name: string): string | undefined {
   return value;
 }
 
+function flag(args: string[], name: string): boolean {
+  const index = args.indexOf(name);
+  if (index < 0) return false;
+  args.splice(index, 1);
+  return true;
+}
+
 function usage(): never {
   process.stderr.write([
     "Review-LSP",
     "",
     "  review-lsp artifact-info",
-    "  review-lsp prepare <repo> <commit> [--state DIR]",
+    "  review-lsp prepare <repo> <commit> [--state DIR] [--compact]",
     "  review-lsp inspect <candidate.json>",
     "  review-lsp query <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
     "  review-lsp container-query <image> <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
@@ -86,13 +93,32 @@ async function main(): Promise<void> {
   }
 
   if (command === "prepare") {
+    const compact = flag(args, "--compact");
     const [repo, commit] = args;
     if (!repo || !commit || args.length !== 2) usage();
     const candidate = await prepareCandidate({ repo: resolve(repo), commit, stateDirectory });
-    process.stdout.write(`${JSON.stringify({
-      candidate_descriptor: candidateDescriptorPath(candidate),
-      candidate,
-    }, null, 2)}\n`);
+    // A consumer that only needs to bind and locate the candidate should not have to receive
+    // the whole entries manifest over stdout; the descriptor on disk remains authoritative.
+    const payload = compact
+      ? {
+          candidate_descriptor: candidateDescriptorPath(candidate),
+          candidate: {
+            schema_version: candidate.schema_version,
+            candidate_id: candidate.candidate_id,
+            repository_identity: candidate.repository_identity,
+            git_object_format: candidate.git_object_format,
+            commit_oid: candidate.commit_oid,
+            tree_oid: candidate.tree_oid,
+            source_manifest_sha256: candidate.source_manifest_sha256,
+            source_root: candidate.source_root,
+            isolation: candidate.isolation,
+            prepared_at: candidate.prepared_at,
+            entry_count: candidate.entries.length,
+            tracked_bytes: candidate.entries.reduce((total, entry) => total + entry.byte_count, 0),
+          },
+        }
+      : { candidate_descriptor: candidateDescriptorPath(candidate), candidate };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
   }
 

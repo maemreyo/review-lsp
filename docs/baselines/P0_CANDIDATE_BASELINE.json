@@ -1,33 +1,64 @@
 {
   "schema": "review-lsp.candidate-baseline.v1",
   "label": "pre-P1 per-blob ingestion",
-  "recorded_at": "2026-09-19T06:04:00.696Z",
+  "recorded_at": "2026-09-19T06:37:54.030Z",
   "platform": "darwin",
   "arch": "arm64",
   "node": "v24.19.0",
   "identity": {
-    "candidate_id": "cand_72b7c68fa6a25450ce054c7a6d88e912",
-    "commit_oid": "f34abb4806672f26af03cee3c3d4c222fb041931",
-    "tree_oid": "f4fd3bf930154abeda777c62c0fac61d4fee387e",
-    "git_object_format": "sha1",
-    "source_manifest_sha256": "0ad26f0704762ab18685ac2e8b43e4309e5faa5dee6f94ba1dccedc730c121ee",
-    "schema_version": "review-lsp.candidate.v1",
-    "isolation": "TRUSTED_LOCAL",
-    "entry_count": 522,
-    "tracked_bytes": 599810,
-    "entry_kinds": {
-      "file": 521,
-      "symlink": 1
+    "content": {
+      "schema_version": "review-lsp.candidate.v1",
+      "git_object_format": "sha1",
+      "commit_oid": "f34abb4806672f26af03cee3c3d4c222fb041931",
+      "tree_oid": "f4fd3bf930154abeda777c62c0fac61d4fee387e",
+      "source_manifest_sha256": "0ad26f0704762ab18685ac2e8b43e4309e5faa5dee6f94ba1dccedc730c121ee",
+      "isolation": "TRUSTED_LOCAL",
+      "entry_count": 522,
+      "tracked_bytes": 599810,
+      "entry_kinds": {
+        "file": 521,
+        "symlink": 1
+      }
+    },
+    "location_bound": {
+      "candidate_id": "cand_81d6a3bf7dbf07b1f0eacf8f526ade0c",
+      "repository_identity": "a108d0ed5a24cc649b577bf5737961491403381256047bd01afa69ba22bcd376"
     }
   },
+  "parity_contract": "identity.content must match exactly; identity.location_bound is path-derived and is not comparable across runs",
   "fixture": {
     "kind": "generated-monorepo",
     "deterministic_commit": "f34abb4806672f26af03cee3c3d4c222fb041931"
   },
   "candidate_preparation": {
-    "cold_prepare_ms": 32860.813,
-    "warm_prepare_ms": 32729.563,
-    "integrity_verification_ms": 87.4
+    "samples": 3,
+    "cold_prepare": {
+      "samples": 3,
+      "min_ms": 35383.021,
+      "median_ms": 39974.763,
+      "p95_ms": 44619.253,
+      "max_ms": 44619.253
+    },
+    "warm_prepare": {
+      "samples": 3,
+      "min_ms": 37017.86,
+      "median_ms": 39955.932,
+      "p95_ms": 58309.891,
+      "max_ms": 58309.891
+    },
+    "integrity_verification": {
+      "samples": 3,
+      "min_ms": 108.651,
+      "median_ms": 112.348,
+      "p95_ms": 3913.825,
+      "max_ms": 3913.825
+    }
+  },
+  "host_load": {
+    "loadavg_1m": 14.53,
+    "loadavg_5m": 9.4,
+    "cpus": 8,
+    "note": "recorded after the run; compare integrity_verification between records before comparing preparation cost"
   },
   "dependency_snapshot": {
     "cold_ms": null,
@@ -35,27 +66,27 @@
     "note": "no dependency snapshot provider exists before P2; this slot is reserved and must be filled by P2"
   },
   "semantic": {
-    "profile_admission_ms": 225.758,
+    "profile_admission_ms": 273.883,
     "session_start": {
       "samples": 5,
-      "min_ms": 270.368,
-      "median_ms": 272.386,
-      "p95_ms": 280.479,
-      "max_ms": 280.479
+      "min_ms": 333.428,
+      "median_ms": 360.64,
+      "p95_ms": 788.437,
+      "max_ms": 788.437
     },
     "hover": {
       "samples": 5,
-      "min_ms": 655.253,
-      "median_ms": 672.883,
-      "p95_ms": 694.441,
-      "max_ms": 694.441
+      "min_ms": 882.857,
+      "median_ms": 1003.185,
+      "p95_ms": 1640.056,
+      "max_ms": 1640.056
     },
     "definition": {
       "samples": 5,
-      "min_ms": 410.096,
-      "median_ms": 413.553,
-      "p95_ms": 419.481,
-      "max_ms": 419.481
+      "min_ms": 538.601,
+      "median_ms": 569.216,
+      "p95_ms": 836.448,
+      "max_ms": 836.448
     }
   },
   "semantics": "observational baseline on this host; identity parity is the gate, timings are not release thresholds"

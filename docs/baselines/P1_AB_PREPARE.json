@@ -1,0 +1,66 @@
+{
+  "schema": "review-lsp.candidate-ab.v1",
+  "recorded_at": "2026-09-19T06:48:45.688Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v24.19.0",
+  "cpus": 8,
+  "loadavg_1m": 6.021,
+  "samples": 5,
+  "identity_parity": "IDENTICAL",
+  "identity": {
+    "schema_version": "review-lsp.candidate.v1",
+    "commit_oid": "f34abb4806672f26af03cee3c3d4c222fb041931",
+    "tree_oid": "f4fd3bf930154abeda777c62c0fac61d4fee387e",
+    "source_manifest_sha256": "0ad26f0704762ab18685ac2e8b43e4309e5faa5dee6f94ba1dccedc730c121ee",
+    "isolation": "TRUSTED_LOCAL",
+    "entry_count": 522,
+    "tracked_bytes": 599810
+  },
+  "baseline": {
+    "cold_prepare": {
+      "samples": 5,
+      "min_ms": 37668.394,
+      "median_ms": 42089.439,
+      "max_ms": 46619.426
+    },
+    "warm_prepare": {
+      "samples": 5,
+      "min_ms": 34074.646,
+      "median_ms": 39018.323,
+      "max_ms": 41149.723
+    },
+    "integrity_verification": {
+      "samples": 5,
+      "min_ms": 84.907,
+      "median_ms": 104.653,
+      "max_ms": 682.102
+    }
+  },
+  "candidate": {
+    "cold_prepare": {
+      "samples": 5,
+      "min_ms": 735.145,
+      "median_ms": 742.35,
+      "max_ms": 1040.644
+    },
+    "warm_prepare": {
+      "samples": 5,
+      "min_ms": 250.91,
+      "median_ms": 292.186,
+      "max_ms": 313.646
+    },
+    "integrity_verification": {
+      "samples": 5,
+      "min_ms": 126.087,
+      "median_ms": 152.587,
+      "max_ms": 167.983
+    }
+  },
+  "speedup": {
+    "cold_prepare": 56.698,
+    "warm_prepare": 133.539,
+    "integrity_verification": 0.686
+  },
+  "semantics": "Paired samples taken alternately in one process on one fixture. integrity_verification is unchanged code reading the same bytes: a speedup near 1.0 indicates both implementations saw comparable host conditions."
+}
