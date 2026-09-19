@@ -138,4 +138,31 @@ describe("stdio LSP lifecycle fault injection", () => {
     expect(outcome.error).toMatchObject({ code: "LSP_PROTOCOL_ERROR" });
     expect(alive(pid!)).toBe(false);
   });
+
+  it("fails an in-flight request when the server dies instead of returning a stale answer", async () => {
+    await access(entrypoint);
+    const rootDir = await root();
+    const driver = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env, REVIEW_LSP_FAKE_MODE: "delay", REVIEW_LSP_FAKE_DELAY_MS: "5000" },
+      30_000,
+      200,
+    );
+    await driver.start();
+    const pid = driver.processId;
+    expect(pid).toBeTypeOf("number");
+    const document = await open(driver, rootDir);
+
+    // A crash mid-query must surface as a failure. Anything else would let a killed process
+    // contribute to an admitted result, which is the one outcome a receipt must never allow.
+    const pending = driver.hover(document, 0, 13);
+    const settled = pending.then(() => "resolved" as const, () => "rejected" as const);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    process.kill(pid as number, "SIGKILL");
+
+    await expect(settled).resolves.toBe("rejected");
+    expect(alive(pid as number)).toBe(false);
+    await driver.shutdown();
+  }, 60_000);
 });

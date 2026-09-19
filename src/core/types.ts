@@ -394,3 +394,24 @@ export interface ExecutionProfile {
   identity: string;
   reason: string | null;
 }
+
+/**
+ * Everything that must be identical before two callers may share a semantic runtime.
+ *
+ * Anything absent from this key is something two callers could legitimately disagree about
+ * while using the same runtime, so absence is a correctness claim, not an omission.
+ */
+export interface RuntimeKey {
+  candidate_id: string;
+  source_manifest_sha256: string;
+  dependency_snapshot_id: string | null;
+  derived_artifact_snapshot_ids: string[];
+  projection_id: string | null;
+  profile_sha256: string;
+  /**
+   * The project whose toolchain applies. A monorepo can resolve different TypeScript
+   * generations per package, and one language server cannot serve both.
+   */
+  resolving_project_identity: string | null;
+  isolation: IsolationKind;
+}
