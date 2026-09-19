@@ -1,6 +1,6 @@
 # Review-LSP Real-World Dogfood Readiness Plan v0.2
 
-Status: **REVISED AFTER REVIEW FEEDBACK — awaiting final architecture freeze; no source implementation started**
+Status: **FROZEN FOR IMPLEMENTATION — architecture review incorporated; no source implementation started at freeze commit**
 
 Date: 2026-09-19
 
@@ -349,6 +349,8 @@ This is intentionally separate from D5: refusing package lifecycle scripts does 
 
 Identity/provenance can prove **what environment answered**, but not that the answer is semantically correct. v0.2 therefore requires differential semantic conformance tests against a trusted reference environment built from the same controlled fixture/candidate inputs.
 
+The reference environment must be **independent of P3C**. For controlled fixtures it is produced using the project's ordinary reference workflow (for example normal `pnpm install` + the project's normal `pnpm build`, including its normal scripts where the fixture requires them) outside Review-LSP's evidence boundary. P3C output must never be copied, reused, or used to generate the reference oracle.
+
 For selected hover/definition cases, run the same request in:
 
 ```text
@@ -358,7 +360,7 @@ B. reference workspace/environment with required workspace outputs present
 
 Canonicalize only transport/path noise, then compare the semantic payload and bound definition target identities. Any unexplained divergence on a result claiming VERIFIED + EXACT_PROJECT is a release-gate failure.
 
-This is a conformance oracle for the exercised fixtures/queries, **not** a claim that LSP answers are universally correct or proof that reviewed code is correct.
+This is a conformance oracle for the exercised fixtures/queries, **not** a claim that LSP answers are universally correct or proof that reviewed code is correct. It also does **not** replace P3C's compiler-outcome gate: a shared compile defect can affect both environments and produce zero differential, so exit status/error diagnostics are independently mandatory.
 
 ## 5. Implementation roadmap
 
@@ -497,6 +499,7 @@ pnpm inputs to admit:
 - `pnpm-workspace.yaml`;
 - all workspace `package.json` files relevant to the lockfile/importers;
 - root and admitted workspace package manifests;
+- development dependencies required by the semantic/type environment are included; the initial pnpm semantic snapshot is **not** a `--prod` install. This is required for cases such as workspace packages whose tsconfig inherits `types: ["node"]` and resolves `@types/node` from the workspace/root dev dependency graph;
 - `.npmrc` only through an explicit safe-key policy;
 - dependency patch files referenced by pnpm configuration;
 - platform/arch;
@@ -522,6 +525,7 @@ Security:
 - semantic snapshot publication/execution offline;
 - any network use confined to explicit acquisition and never inherited by semantic execution;
 - frozen lockfile;
+- include the admitted development dependency graph needed for TypeScript/module/type resolution; do not use `--prod` for the initial semantic snapshot profile;
 - ignore scripts;
 - no hardlinked admitted snapshot;
 - output tree containment verification.
@@ -534,7 +538,8 @@ Acceptance:
 - a linked workspace package whose selected `types`/`exports` semantic target is missing cannot reach VERIFIED;
 - deleting/tampering a bound dependency snapshot invalidates it;
 - missing local store data never silently enables network;
-- lifecycle scripts are proven not to execute.
+- lifecycle scripts are proven not to execute;
+- a fixture whose workspace package obtains required ambient types from root devDependencies resolves them in the admitted semantic snapshot, proving the provider did not accidentally project a production-only dependency graph.
 
 ## P3 — Semantic execution projection
 
@@ -610,12 +615,24 @@ resolving-project identity
 compiler/semantic-engine identity
 fixed compiler argv/recipe
 input dependency snapshot id
+compiler exit status
+compiler diagnostic error count
+compiler stdout/stderr digest or equivalent bounded diagnostic transcript identity
 output tree manifest sha256
 ```
 
 The semantic projection may expose these bytes at the package's declared `dist`/types locations, but receipts classify them as `DERIVED_WORKSPACE_ARTIFACT`, never as Git candidate source.
 
-After derivation, rerun the entry-point resolvability gate. If the required target is still absent, the environment remains PARTIAL/UNSUPPORTED.
+Compiler outcome is a hard admission gate. A derived snapshot may be retained as advisory/debug evidence after a failed compile, but it may support `VERIFIED + EXACT_PROJECT` only when:
+
+```text
+compiler exit status == 0
+compiler diagnostic error count == 0
+```
+
+A non-zero exit, any error diagnostic, crash, timeout, or inability to determine a trustworthy error count forces the derivation to FAILED/PARTIAL and prevents its outputs from satisfying the strong entry-point completeness gate, even if `.d.ts` files were emitted. Do not rewrite the project recipe with `--noEmitOnError`; preserve the admitted recipe/toolchain semantics and bind the observed compile outcome explicitly.
+
+After a zero-error derivation, rerun the entry-point resolvability gate. If the required target is still absent, the environment remains PARTIAL/UNSUPPORTED.
 
 For the original dogfood repo, the observed affected public workspace packages (`@zamery/browser-provider`, `@zamery/pi-browser`, `@zamery/browser-firefox`) declare `types: ./dist/index.d.ts`, use `tsc -p tsconfig.json`, and inherit `declaration: true`; they are therefore concrete acceptance candidates for this narrow provider, not proof that arbitrary monorepo builds are supported.
 
@@ -628,7 +645,8 @@ Acceptance:
 - a multi-project monorepo fixture with different project-local TypeScript versions routes each queried document to the owning project's engine;
 - an intentionally mismatched provider/toolchain case does not masquerade as project-aligned VERIFIED evidence;
 - missing workspace type entry point without an admitted derivation remains PARTIAL;
-- a supported plain-`tsc -p` workspace package can produce a sealed derived artifact snapshot and then pass the entry-point gate;
+- a supported plain-`tsc -p` workspace package can produce a sealed derived artifact snapshot and then pass the entry-point gate only when compiler exit status and diagnostic error count are both zero;
+- a fixture with `noEmitOnError` unset and an intentional TypeScript error may emit declarations, but those outputs cannot support VERIFIED/EXACT_PROJECT;
 - derived declarations are receipt-bound as `DERIVED_WORKSPACE_ARTIFACT` and never misclassified as candidate source;
 - custom/arbitrary workspace build script is not executed and remains PARTIAL/UNSUPPORTED;
 - dependency type/definition resolution into admitted node_modules: VERIFIED + DEPENDENCY_SNAPSHOT binding;
@@ -852,6 +870,8 @@ Required:
 - missing workspace `types`/selected `exports` target;
 - custom workspace build recipe that must not be executed;
 - derivation recipe trying to select an external config, PATH-shadowed compiler, or escaping output;
+- plain-`tsc -p` derivation with `noEmitOnError` unset and an intentional type error that still emits `.d.ts`; compiler exit/error gate must keep it below VERIFIED/EXACT_PROJECT;
+- compiler crash/timeout or indeterminate diagnostic error count during derivation;
 - derived workspace artifact tampering;
 - dependency snapshot tampering;
 - projection source mutation;
@@ -892,6 +912,7 @@ source_binding:                           VERIFIED
 environment_binding on supported pnpm:   VERIFIED
 workspace entry-point completeness:       VERIFIED
 derived workspace artifact binding:       VERIFIED where required
+P3C compiler exit/error gate:             PASS where derivation required
 project semantic toolchain alignment:     EXACT_PROJECT
 candidate engine isolation/admission:     VERIFIED
 semantic differential conformance:        PASS
@@ -1005,7 +1026,7 @@ The implementation should start only after these decisions are accepted or amend
 
 1. **Source candidate stays immutable and dependency-free; execution uses a separate projection.**
 2. **First VERIFIED dependency provider is pnpm only.**
-3. **Semantic execution uses frozen-lockfile + ignore-scripts + projection entry-point resolvability gates; dependency acquisition is an explicit separate phase and may use network only when policy authorizes it. Ambient `node_modules`/pnpm store is never evidence authority. Missing workspace type entry points may be satisfied only by the constrained admitted-compiler derivation provider; arbitrary package build scripts remain unsupported.**
+3. **Semantic execution uses frozen-lockfile + ignore-scripts + projection entry-point resolvability gates; dependency acquisition is an explicit separate phase and may use network only when policy authorizes it. Ambient `node_modules`/pnpm store is never evidence authority. Missing workspace type entry points may be satisfied only by the constrained admitted-compiler derivation provider; arbitrary package build scripts remain unsupported, and derived outputs may support VERIFIED/EXACT_PROJECT only when compiler exit status is 0 and diagnostic error count is 0.**
 4. **Clone-or-copy only; never hardlink admitted dependency snapshots.**
 5. **Dependency snapshots are content-addressed/reused with bounded GC; materialization method is metadata, not semantic identity. Publish-time full verification + sealed leases avoid full-tree rehash on every query.**
 6. **OpenCodeReview reuses one candidate semantic runtime across concrete questions instead of per-query prepare/close.**
@@ -1014,7 +1035,7 @@ The implementation should start only after these decisions are accepted or amend
 9. **Environment PARTIAL remains advisory and cannot satisfy exact-candidate admission.**
 10. **Semantic-toolchain alignment is first-class and per resolving project; TypeScript 7 uses its admitted native LSP rather than silently falling back to bundled TypeScript 6.**
 11. **Executing a candidate-selected TypeScript engine is a separate trust boundary: exact artifact admission, plugins/automatic acquisition disabled, no network, and enforced sandbox/container required before untrusted candidate engine output can qualify as strong `EXACT_PROJECT` evidence.**
-12. **Semantic differential conformance against trusted reference fixtures is a mandatory release gate for VERIFIED + EXACT_PROJECT hover/definition results.**
+12. **Semantic differential conformance against an independently produced trusted reference workspace is a mandatory release gate for VERIFIED + EXACT_PROJECT hover/definition results. The reference must use the project's ordinary build workflow outside Review-LSP's evidence boundary and must not reuse P3C outputs; this differential gate does not replace P3C's independent zero-exit/zero-error compiler gate.**
 13. **Additional languages wait until the generic snapshot/projection architecture is proven by the TypeScript/pnpm path.**
 
 ## 11. Definition of done
@@ -1027,6 +1048,7 @@ This program is complete when the second real-repository dogfood can use only th
 - dependency-bearing supported TypeScript project reaches VERIFIED through an admitted snapshot;
 - historical dependencies can be explicitly acquired without permitting network during semantic execution;
 - workspace semantic entry points required by the resolving project are proven present before VERIFIED, with any constrained derived artifacts separately content-addressed and receipt-bound;
+- any P3C derivation used for strong evidence has compiler exit status 0 and diagnostic error count 0; emitted declarations from failed/erroring compiles remain advisory only;
 - the actual semantic engine is aligned with and bound to the queried document's resolving project and admitted TypeScript generation;
 - candidate-selected engine execution satisfies the declared isolation/trust profile;
 - controlled semantic differential fixtures match the trusted reference environment for accepted hover/definition cases;
