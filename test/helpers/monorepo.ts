@@ -6,11 +6,24 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
- * Deterministic environment: a fixed identity and fixed author/committer dates make the
- * generated commit OID reproducible, so a baseline recorded on one commit can be compared
- * against a later implementation by exact candidate identity rather than by timing alone.
+ * Deterministic environment.
+ *
+ * Fixed identity and fixed author/committer dates are not sufficient on their own: Git also
+ * reads system and global configuration, and settings such as `init.defaultObjectFormat`,
+ * `commit.gpgsign` or `core.autocrlf` change the resulting commit OID. Inheriting the
+ * ambient environment would therefore make the "reproducible across machines" claim depend
+ * on whatever the host developer has configured.
+ *
+ * The environment below is constructed rather than inherited, and mirrors the sanitisation
+ * the production Git helper applies, so the fixture commit OID is a function of the fixture
+ * content alone.
  */
 const DETERMINISTIC_ENV = {
+  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_TERMINAL_PROMPT: "0",
   GIT_AUTHOR_NAME: "Review LSP Fixture",
   GIT_AUTHOR_EMAIL: "fixture@example.invalid",
   GIT_AUTHOR_DATE: "1700000000 +0000",
@@ -19,13 +32,17 @@ const DETERMINISTIC_ENV = {
   GIT_COMMITTER_DATE: "1700000000 +0000",
 };
 
-async function git(repo: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", repo, ...args], {
+async function runGit(args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, ...DETERMINISTIC_ENV },
+    env: DETERMINISTIC_ENV,
   });
   return stdout.trim();
+}
+
+async function git(repo: string, ...args: string[]): Promise<string> {
+  return runGit(["-C", repo, ...args]);
 }
 
 export interface MonorepoShape {
@@ -84,10 +101,17 @@ export async function createMonorepoRepo(root: string, shape: MonorepoShape = {}
 
   const repo = join(root, "repo");
   await mkdir(repo, { recursive: true });
-  await execFileAsync("git", ["init", "-q", "-b", "main", repo]);
+  // `init` must use the same sanitised environment as every other command, and the object
+  // format must be explicit: a host that sets `init.defaultObjectFormat=sha256` would
+  // otherwise produce a SHA-256 repository whose commit OID cannot match the baseline.
+  await runGit(["init", "-q", "-b", "main", "--object-format=sha1", repo]);
   await git(repo, "config", "user.name", "Review LSP Fixture");
   await git(repo, "config", "user.email", "fixture@example.invalid");
   await git(repo, "config", "core.autocrlf", "false");
+  await git(repo, "config", "core.fileMode", "true");
+  await git(repo, "config", "core.symlinks", "true");
+  await git(repo, "config", "commit.gpgsign", "false");
+  await git(repo, "config", "tag.gpgsign", "false");
 
   await writeFile(join(repo, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
   await writeFile(join(repo, "package.json"), `${JSON.stringify({

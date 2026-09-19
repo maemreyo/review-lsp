@@ -139,6 +139,20 @@ export async function catFileBatch(
   const stream = new ByteStream();
   const stderrChunks: Buffer[] = [];
   let exited = false;
+  let requestPipeClosed = false;
+
+  // Resolves as soon as the request pipe can no longer accept writes, whether because the
+  // child exited, failed to start, or the pipe itself errored. The writer races every
+  // backpressure wait against this: a child that dies while stdin is full never emits
+  // `drain`, so waiting on `drain` alone would block forever.
+  let releaseWriter: () => void = () => undefined;
+  const requestPipeUnusable = new Promise<void>((resolve) => {
+    releaseWriter = resolve;
+  });
+  const stopWriting = (): void => {
+    requestPipeClosed = true;
+    releaseWriter();
+  };
 
   child.stdout.on("data", (chunk: Buffer) => stream.push(chunk));
   child.stdout.on("error", (error: Error) => stream.fail(error));
@@ -146,29 +160,41 @@ export async function catFileBatch(
     if (stderrChunks.length < 64) stderrChunks.push(chunk);
   });
   child.on("error", (error: Error) => {
+    exited = true;
+    stopWriting();
     stream.fail(new ReviewLspError("GIT_COMMAND_FAILED", `git cat-file --batch failed to start: ${error.message}`));
   });
 
   const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.on("close", (code, signal) => {
       exited = true;
+      stopWriting();
       stream.end();
       resolve({ code, signal });
     });
   });
 
-  // Ignore EPIPE on the request pipe: a premature child exit is reported through the
-  // response stream with the accumulated stderr, which is the more useful diagnostic.
-  child.stdin.on("error", () => undefined);
+  // EPIPE on the request pipe is expected when the child exits early; the response stream
+  // reports the failure with the accumulated stderr, which is the more useful diagnostic.
+  child.stdin.on("error", stopWriting);
+  child.stdin.on("close", stopWriting);
 
   const writeRequests = (async () => {
-    for (let index = 0; index < oids.length; index += 1) {
-      if (exited) return;
-      if (!child.stdin.write(`${oids[index]}\n`)) {
-        await new Promise<void>((resolve) => child.stdin.once("drain", resolve));
+    try {
+      for (let index = 0; index < oids.length; index += 1) {
+        if (exited || requestPipeClosed) return;
+        if (!child.stdin.write(`${oids[index]}\n`)) {
+          await Promise.race([
+            new Promise<void>((resolve) => child.stdin.once("drain", resolve)),
+            requestPipeUnusable,
+          ]);
+          if (exited || requestPipeClosed) return;
+        }
       }
+      child.stdin.end();
+    } catch {
+      // Writing is best effort: every failure that matters surfaces on the response stream.
     }
-    child.stdin.end();
   })();
 
   try {
