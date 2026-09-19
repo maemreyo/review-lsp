@@ -12,6 +12,12 @@ export {
 export { scanDependencyTree } from "./core/dependency-tree.js";
 export { runEntryPointGate } from "./core/entry-points.js";
 export {
+  admitEngineArtifact,
+  engineArtifactBinding,
+  engineMayClaimExactProject,
+  resolveExecutionProfile,
+} from "./core/engine-isolation.js";
+export {
   alignmentBlocksStrongAdmission,
   assessToolchainAlignment,
   resolveProjectForDocument,

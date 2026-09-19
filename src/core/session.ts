@@ -9,6 +9,7 @@ import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
 import { classifyProjectionUri, verifyProjectionSource } from "./projection.js";
+import { admitEngineArtifact, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
 import {
   alignmentBlocksStrongAdmission,
   assessToolchainAlignment,
@@ -23,6 +24,7 @@ import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
   EnvironmentManifest,
+  ExecutionProfile,
   IsolationKind,
   ProjectionDescriptor,
   SemanticReceipt,
@@ -158,6 +160,13 @@ export class SemanticSession {
   readonly sessionEpoch = 1;
   readonly environment: EnvironmentManifest;
   private closed = false;
+  private cachedExecutionProfile: ExecutionProfile | undefined;
+
+  /** Probing the host is not free, and the answer cannot change within a session. */
+  private async executionProfile(): Promise<ExecutionProfile> {
+    this.cachedExecutionProfile ??= await resolveExecutionProfile();
+    return this.cachedExecutionProfile;
+  }
 
   private constructor(
     readonly candidate: CandidateDescriptor,
@@ -318,13 +327,21 @@ export class SemanticSession {
       snapshot: this.snapshot,
       projectRoot: resolvingProject.project_root,
     });
+    // Admitting the candidate's engine and being allowed to run it are separate questions,
+    // and both are separate from whether it actually answered. Today Review-LSP's own bundled
+    // TypeScript always answers, because engine routing is not implemented, so
+    // `engineIsProjectAdmitted` stays false regardless of what admission would permit.
+    const candidateEngine = this.snapshot
+      ? await admitEngineArtifact({ snapshot: this.snapshot, projectRoot: resolvingProject.project_root })
+        .catch(() => null)
+      : null;
+    const executionProfile = await this.executionProfile();
+    const strongAdmission = engineMayClaimExactProject({ artifact: candidateEngine, profile: executionProfile });
+
     const assessment = assessToolchainAlignment({
       projectVersion: projectToolchain.version,
       projectVersionSource: projectToolchain.source,
       engineVersion: this.profile.typescript_version,
-      // Review-LSP's own bundled TypeScript answers today. Executing the candidate's engine
-      // is a separate trust decision that requires enforced isolation, so this stays false
-      // rather than quietly claiming project alignment that was never established.
       engineIsProjectAdmitted: false,
     });
     const semanticToolchain: SemanticToolchainEvidence = {
@@ -336,8 +353,24 @@ export class SemanticSession {
         typescript_version: this.profile.typescript_version,
         is_project_admitted: false,
       },
+      candidate_engine: candidateEngine
+        ? {
+            artifact_id: candidateEngine.artifact_id,
+            version: candidateEngine.version,
+            engine_kind: candidateEngine.engine_kind,
+            tree_manifest_sha256: candidateEngine.tree_manifest_sha256,
+          }
+        : null,
+      execution_profile: {
+        kind: executionProfile.kind,
+        enforced: executionProfile.enforced,
+        identity: executionProfile.identity,
+      },
       toolchain_alignment: assessment.alignment,
       toolchain_alignment_reason: assessment.reason,
+      exact_project_blocked_by: assessment.alignment === "EXACT_PROJECT"
+        ? null
+        : strongAdmission.reason ?? assessment.reason,
     };
 
     let result: unknown;

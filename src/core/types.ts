@@ -330,6 +330,67 @@ export interface SemanticToolchainEvidence {
     typescript_version: string;
     is_project_admitted: boolean;
   };
+  /**
+   * The candidate's own engine, when the admitted dependency state selects one.
+   *
+   * Recorded whether or not it answered: knowing that an exact engine exists and was not used
+   * is the difference between "no project engine" and "a project engine that could not be
+   * trusted to run here".
+   */
+  candidate_engine: {
+    artifact_id: string;
+    version: string;
+    engine_kind: "TSSERVER_LEGACY" | "NATIVE_LSP";
+    tree_manifest_sha256: string;
+  } | null;
+  execution_profile: {
+    kind: IsolationKind;
+    enforced: boolean;
+    identity: string;
+  };
   toolchain_alignment: ToolchainAlignment;
   toolchain_alignment_reason: string | null;
+  /** Why strong project alignment was not claimed, when it was not. */
+  exact_project_blocked_by: string | null;
+}
+
+/**
+ * A candidate-selected semantic engine bound by exact identity.
+ *
+ * The version alone does not say which bytes would run, so identity covers the whole engine
+ * tree. `policy` records the conditions the engine must be launched under, with the artifact
+ * rather than at the launch site, so a receipt can state them.
+ */
+export interface AdmittedEngineArtifact {
+  schema_version: "review-lsp.engine-artifact.v1";
+  artifact_id: string;
+  package_name: "typescript";
+  version: string;
+  engine_kind: "TSSERVER_LEGACY" | "NATIVE_LSP";
+  tree_manifest_sha256: string;
+  dependency_snapshot_id: string;
+  engine_root: string;
+  entrypoint: string;
+  entrypoint_sha256: string;
+  file_count: number;
+  policy: {
+    plugins: "DISABLED";
+    automatic_type_acquisition: "DISABLED";
+    network: "DENIED";
+  };
+}
+
+/**
+ * The execution profile a candidate-selected engine would run under.
+ *
+ * `enforced` is what admission turns on. A profile that only describes the host, without
+ * constraining what the engine can reach, does not become enforcement by being named.
+ */
+export interface ExecutionProfile {
+  schema_version: "review-lsp.execution-profile.v1";
+  kind: IsolationKind;
+  enforced: boolean;
+  platform: string;
+  identity: string;
+  reason: string | null;
 }
