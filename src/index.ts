@@ -1,4 +1,6 @@
 export { buildArtifactManifest, loadAndVerifyArtifactManifest, verifyArtifactManifest } from "./core/artifact.js";
+export { acquireDependencies, acquisitionStoreDirectory } from "./core/dependency-acquisition.js";
+export { deriveDependencyInputs } from "./core/dependency-inputs.js";
 export { candidateDescriptorPath, loadCandidateDescriptor, prepareCandidate, readCandidateFile, removeCandidate, verifyCandidateIntegrity } from "./core/candidate.js";
 export { buildEnvironmentManifest } from "./core/environment.js";
 export { containerImageIdFromEnvironment, parseLinuxMountInfo, resolveDockerImageId, runDockerSemanticQuery, verifyLinuxReadOnlyMount } from "./core/container.js";

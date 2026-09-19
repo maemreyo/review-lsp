@@ -12,6 +12,8 @@ import {
   prepareCandidate,
   removeCandidate,
 } from "./core/candidate.js";
+import { acquireDependencies } from "./core/dependency-acquisition.js";
+import { deriveDependencyInputs } from "./core/dependency-inputs.js";
 import { ReviewLspError } from "./core/errors.js";
 import { createTypeScriptProfile } from "./core/profile.js";
 import { receiptPath, validateReceiptFile } from "./core/receipts.js";
@@ -65,6 +67,8 @@ function usage(): never {
     "  review-lsp artifact-info",
     "  review-lsp prepare <repo> <commit> [--state DIR] [--compact]",
     "  review-lsp inspect <candidate.json>",
+    "  review-lsp dependency-inputs <candidate.json>",
+    "  review-lsp acquire <candidate.json> [--state DIR] [--allow-network]",
     "  review-lsp query <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
     "  review-lsp container-query <image> <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
     "  review-lsp validate <receipt.json>",
@@ -126,6 +130,35 @@ async function main(): Promise<void> {
     const [descriptor] = args;
     if (!descriptor || args.length !== 1) usage();
     process.stdout.write(`${JSON.stringify(await loadCandidateDescriptor(resolve(descriptor)), null, 2)}\n`);
+    return;
+  }
+
+  if (command === "dependency-inputs") {
+    const [descriptor] = args;
+    if (!descriptor || args.length !== 1) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    process.stdout.write(`${JSON.stringify(await deriveDependencyInputs(candidate), null, 2)}\n`);
+    return;
+  }
+
+  if (command === "acquire") {
+    // Acquisition is opt-in per invocation. Network access is never inherited from a previous
+    // run, a configuration file, or the semantic query path.
+    const allowNetwork = flag(args, "--allow-network");
+    const [descriptor] = args;
+    if (!descriptor || args.length !== 1) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    const inputs = await deriveDependencyInputs(candidate);
+    const report = await acquireDependencies({
+      candidate,
+      inputs,
+      stateDirectory,
+      networkPolicy: allowNetwork ? "EXPLICIT_ACQUISITION" : "OFFLINE",
+    });
+    process.stdout.write(`${JSON.stringify({ input_set: { input_set_id: inputs.input_set_id }, acquisition: report }, null, 2)}\n`);
+    // A non-satisfied acquisition is an actionable outcome, not a crash, but it must not look
+    // like success to a caller that only checks the exit status.
+    if (report.state !== "SATISFIED") process.exitCode = 3;
     return;
   }
 

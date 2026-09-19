@@ -111,3 +111,66 @@ export interface SemanticReceipt {
   request_duration_ms: number;
   observed_at: string;
 }
+
+export interface DependencyInputFile {
+  path: string;
+  sha256: string;
+  byte_count: number;
+}
+
+/**
+ * The exact candidate-declared inputs that determine dependency resolution.
+ *
+ * `input_set_id` is content-addressed over everything that can change what an install
+ * produces, so two candidates with the same inputs share an acquisition and a snapshot,
+ * and any change to a manifest, the lockfile, a patch or admitted configuration produces a
+ * different identity.
+ */
+export interface DependencyInputSet {
+  schema_version: "review-lsp.dependency-inputs.v1";
+  input_set_id: string;
+  ecosystem: "node";
+  package_manager: "pnpm";
+  package_manager_version: string;
+  platform: string;
+  arch: string;
+  lockfile_version: string;
+  workspace_globs: string[];
+  workspace_manifests: string[];
+  npmrc_settings: Record<string, string>;
+  files: DependencyInputFile[];
+  files_sha256: string;
+  patches: DependencyInputFile[];
+  /**
+   * TypeScript as the candidate declares it, recorded so the semantic profile router can
+   * later select the project's own generation. Recording is not admission.
+   */
+  project_toolchain: {
+    root_typescript?: string;
+    workspace_typescript: Record<string, string>;
+  };
+}
+
+export type AcquisitionState = "SATISFIED" | "ACQUISITION_REQUIRED" | "UNSUPPORTED";
+
+export type AcquisitionNetworkPolicy = "OFFLINE" | "EXPLICIT_ACQUISITION";
+
+export interface AcquisitionReport {
+  schema_version: "review-lsp.dependency-acquisition.v1";
+  state: AcquisitionState;
+  input_set_id: string;
+  package_manager: "pnpm";
+  package_manager_version: string;
+  network_policy: AcquisitionNetworkPolicy;
+  /** True only when this run actually contacted a registry under an explicit policy. */
+  network_used: boolean;
+  script_policy: "IGNORE_SCRIPTS";
+  lockfile_policy: "FROZEN";
+  dependency_graph: "INCLUDES_DEV";
+  store_directory: string;
+  store_identity: string;
+  acquired_at: string;
+  /** Present when state is not SATISFIED: what is missing and what would resolve it. */
+  limitation?: string;
+  remediation?: string;
+}

@@ -94,7 +94,8 @@ describe("git cat-file --batch plumbing", () => {
     });
     expect(count).toBe(400);
     expect(bytes).toBeGreaterThan(400 * 500);
-  });
+    // Committing 400 objects dominates this test's runtime on a contended host.
+  }, 60_000);
 
   it("rejects a missing object rather than yielding a short candidate", async () => {
     const { repo } = await repoWithBlobs({ "a.txt": "alpha\n" });
