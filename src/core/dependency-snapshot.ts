@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { readCandidateFile } from "./candidate.js";
@@ -24,6 +24,74 @@ import type {
  */
 
 const PUBLISH_TIMEOUT_MS = 15 * 60 * 1000;
+
+interface VerifiedSnapshotLease {
+  descriptor_binding: string;
+  root_realpath: string;
+  root_dev: number;
+  root_ino: number;
+  root_mode: number;
+}
+
+/**
+ * Process-local verified leases.
+ *
+ * This is deliberately not durable. A process restart must full-reverify a cached snapshot
+ * once before reuse. Within one trusted-local process, a sealed root with the same descriptor
+ * binding and filesystem identity may reuse that verification without re-hashing every file.
+ */
+const verifiedSnapshotLeases = new Map<string, VerifiedSnapshotLease>();
+
+function snapshotIdentity(descriptor: DependencySnapshotDescriptor): string {
+  return contentId("depsnap", {
+    schema_version: descriptor.schema_version,
+    ecosystem: descriptor.ecosystem,
+    package_manager: descriptor.package_manager,
+    package_manager_version: descriptor.package_manager_version,
+    platform: descriptor.platform,
+    arch: descriptor.arch,
+    input_set_id: descriptor.input_set_id,
+    network_policy: descriptor.network_policy,
+    script_policy: descriptor.script_policy,
+    lockfile_policy: descriptor.lockfile_policy,
+    dependency_graph: descriptor.dependency_graph,
+    tree_manifest_sha256: descriptor.tree_manifest_sha256,
+  });
+}
+
+async function snapshotLeaseFingerprint(descriptor: DependencySnapshotDescriptor): Promise<VerifiedSnapshotLease> {
+  const [rootRealpath, rootInfo] = await Promise.all([
+    realpath(descriptor.dependency_root),
+    stat(descriptor.dependency_root),
+  ]);
+  if (!rootInfo.isDirectory()) {
+    throw new ReviewLspError(
+      "DEPENDENCY_SNAPSHOT_INVALID",
+      `dependency snapshot ${descriptor.snapshot_id} root is not a directory`,
+    );
+  }
+  if ((rootInfo.mode & 0o222) !== 0) {
+    throw new ReviewLspError(
+      "DEPENDENCY_SNAPSHOT_INVALID",
+      `dependency snapshot ${descriptor.snapshot_id} root is not sealed read-only`,
+    );
+  }
+  return {
+    descriptor_binding: canonicalJson(descriptor),
+    root_realpath: rootRealpath,
+    root_dev: rootInfo.dev,
+    root_ino: rootInfo.ino,
+    root_mode: rootInfo.mode,
+  };
+}
+
+function sameSnapshotLease(a: VerifiedSnapshotLease, b: VerifiedSnapshotLease): boolean {
+  return a.descriptor_binding === b.descriptor_binding
+    && a.root_realpath === b.root_realpath
+    && a.root_dev === b.root_dev
+    && a.root_ino === b.root_ino
+    && a.root_mode === b.root_mode;
+}
 
 export function dependencySnapshotDirectory(stateDirectory: string, snapshotId: string): string {
   return join(stateDirectory, "dependencies", snapshotId);
@@ -403,6 +471,27 @@ export async function publishDependencySnapshot(options: PublishOptions): Promis
  * altered must not keep its admission simply because a descriptor file still says so.
  */
 export async function verifyDependencySnapshot(descriptor: DependencySnapshotDescriptor): Promise<void> {
+  const expectedId = snapshotIdentity(descriptor);
+  if (expectedId !== descriptor.snapshot_id) {
+    throw new ReviewLspError(
+      "DEPENDENCY_SNAPSHOT_INVALID",
+      `dependency snapshot ${descriptor.snapshot_id} does not match its own content-addressed identity`,
+    );
+  }
+
+  let lease: VerifiedSnapshotLease;
+  try {
+    lease = await snapshotLeaseFingerprint(descriptor);
+  } catch (error) {
+    if (error instanceof ReviewLspError) throw error;
+    throw new ReviewLspError(
+      "DEPENDENCY_SNAPSHOT_INVALID",
+      `dependency snapshot ${descriptor.snapshot_id} root identity is not readable: ${(error as Error).message}`,
+    );
+  }
+  const cached = verifiedSnapshotLeases.get(descriptor.snapshot_id);
+  if (cached && sameSnapshotLease(cached, lease)) return;
+
   const scan = await scanDependencyTree(descriptor.dependency_root).catch((error: unknown) => {
     if (error instanceof ReviewLspError) throw error;
     throw new ReviewLspError(
@@ -424,26 +513,16 @@ export async function verifyDependencySnapshot(descriptor: DependencySnapshotDes
     );
   }
 
-  const expectedId = contentId("depsnap", {
-    schema_version: descriptor.schema_version,
-    ecosystem: descriptor.ecosystem,
-    package_manager: descriptor.package_manager,
-    package_manager_version: descriptor.package_manager_version,
-    platform: descriptor.platform,
-    arch: descriptor.arch,
-    input_set_id: descriptor.input_set_id,
-    network_policy: descriptor.network_policy,
-    script_policy: descriptor.script_policy,
-    lockfile_policy: descriptor.lockfile_policy,
-    dependency_graph: descriptor.dependency_graph,
-    tree_manifest_sha256: descriptor.tree_manifest_sha256,
-  });
-  if (expectedId !== descriptor.snapshot_id) {
+  if (scan.file_count !== descriptor.file_count
+    || scan.symlink_count !== descriptor.symlink_count
+    || scan.total_bytes !== descriptor.total_bytes) {
     throw new ReviewLspError(
       "DEPENDENCY_SNAPSHOT_INVALID",
-      `dependency snapshot ${descriptor.snapshot_id} does not match its own content-addressed identity`,
+      `dependency snapshot ${descriptor.snapshot_id} published counts no longer match its tree`,
     );
   }
+
+  verifiedSnapshotLeases.set(descriptor.snapshot_id, lease);
 }
 
 export async function removeDependencySnapshot(descriptor: DependencySnapshotDescriptor): Promise<void> {

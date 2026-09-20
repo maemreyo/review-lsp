@@ -46,75 +46,124 @@ export interface DependencyTreeScan {
   multiply_linked: string[];
 }
 
+interface FileTask {
+  path: string;
+  absolute: string;
+}
+
+const FILE_HASH_CONCURRENCY = 32;
+
 /**
  * Walks a materialized dependency root and digests it.
  *
- * File contents are hashed, symlinks are bound by target, and directories contribute their
- * path so that an added or removed empty directory still changes the manifest.
+ * Directory discovery is deterministic, while regular-file reads are bounded-concurrent. This
+ * matters for pnpm trees with tens of thousands of small files: serial open/read/close made a
+ * mandatory post-restart full verification take tens of seconds even when the underlying APFS
+ * tree was already warm.
+ *
+ * File contents are still fully hashed, symlinks are still bound by target, and directories
+ * still contribute their path. O_NOFOLLOW plus fstat after open prevents a path from being
+ * swapped to a symlink between discovery and hashing.
  */
 export async function scanDependencyTree(root: string): Promise<DependencyTreeScan> {
-  const entries: DependencyTreeEntry[] = [];
-  const multiplyLinked: string[] = [];
-  let fileCount = 0;
-  let symlinkCount = 0;
-  let totalBytes = 0;
+  const structuralEntries: DependencyTreeEntry[] = [];
+  const fileTasks: FileTask[] = [];
+  const directories: string[] = [""];
 
-  async function visit(relativePath: string): Promise<void> {
-    const absolute = relativePath ? join(root, relativePath) : root;
-    const info = await lstat(absolute);
+  for (let cursor = 0; cursor < directories.length; cursor += 1) {
+    const relativeDirectory = directories[cursor] ?? "";
+    const absoluteDirectory = relativeDirectory ? join(root, relativeDirectory) : root;
+    const names = (await readdir(absoluteDirectory)).sort();
 
-    if (info.isSymbolicLink()) {
-      const target = await readlink(absolute);
-      containedTarget(root, relativePath, target);
-      symlinkCount += 1;
-      entries.push({ path: relativePath, kind: "symlink", symlink_target: target, sha256: sha256(target) });
-      return;
-    }
+    const children = await Promise.all(names.map(async (name) => {
+      const path = relativeDirectory ? join(relativeDirectory, name) : name;
+      const absolute = join(root, path);
+      return { path, absolute, info: await lstat(absolute) };
+    }));
 
-    if (info.isDirectory()) {
-      if (relativePath) entries.push({ path: relativePath, kind: "directory" });
-      for (const name of (await readdir(absolute)).sort()) {
-        await visit(relativePath ? join(relativePath, name) : name);
+    for (const child of children) {
+      if (child.info.isSymbolicLink()) {
+        const target = await readlink(child.absolute);
+        containedTarget(root, child.path, target);
+        structuralEntries.push({
+          path: child.path,
+          kind: "symlink",
+          symlink_target: target,
+          sha256: sha256(target),
+        });
+        continue;
       }
-      return;
-    }
 
-    if (!info.isFile()) {
-      throw new ReviewLspError(
-        "DEPENDENCY_SNAPSHOT_INVALID",
-        `${relativePath} is neither a regular file, directory nor symlink`,
-      );
-    }
+      if (child.info.isDirectory()) {
+        structuralEntries.push({ path: child.path, kind: "directory" });
+        directories.push(child.path);
+        continue;
+      }
 
-    // A hard link would alias the snapshot to mutable state elsewhere: a later write through
-    // any other alias would change admitted bytes without touching the snapshot.
-    if (info.nlink > 1) multiplyLinked.push(relativePath);
+      if (!child.info.isFile()) {
+        throw new ReviewLspError(
+          "DEPENDENCY_SNAPSHOT_INVALID",
+          `${child.path} is neither a regular file, directory nor symlink`,
+        );
+      }
 
-    const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const bytes = await handle.readFile();
-      fileCount += 1;
-      totalBytes += bytes.byteLength;
-      entries.push({
-        path: relativePath,
-        kind: "file",
-        sha256: sha256(bytes),
-        byte_count: bytes.byteLength,
-        executable: (info.mode & 0o111) !== 0,
-      });
-    } finally {
-      await handle.close();
+      fileTasks.push({ path: child.path, absolute: child.absolute });
     }
   }
 
-  await visit("");
+  const fileEntries = new Array<DependencyTreeEntry>(fileTasks.length);
+  const multiplyLinked: string[] = [];
+  let nextFile = 0;
+
+  async function hashWorker(): Promise<void> {
+    while (true) {
+      const index = nextFile;
+      nextFile += 1;
+      if (index >= fileTasks.length) return;
+      const task = fileTasks[index];
+      if (!task) return;
+
+      const handle = await open(task.absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const openedInfo = await handle.stat();
+        if (!openedInfo.isFile()) {
+          throw new ReviewLspError(
+            "DEPENDENCY_SNAPSHOT_INVALID",
+            `${task.path} stopped being a regular file before hashing`,
+          );
+        }
+        const bytes = await handle.readFile();
+        if (openedInfo.nlink > 1) multiplyLinked.push(task.path);
+        fileEntries[index] = {
+          path: task.path,
+          kind: "file",
+          sha256: sha256(bytes),
+          byte_count: bytes.byteLength,
+          executable: (openedInfo.mode & 0o111) !== 0,
+        };
+      } finally {
+        await handle.close();
+      }
+    }
+  }
+
+  const workerCount = Math.min(FILE_HASH_CONCURRENCY, Math.max(1, fileTasks.length));
+  await Promise.all(Array.from({ length: workerCount }, () => hashWorker()));
+
+  const entries = [...structuralEntries, ...fileEntries];
   entries.sort((a, b) => a.path.localeCompare(b.path));
+  multiplyLinked.sort();
+
+  let totalBytes = 0;
+  for (const entry of fileEntries) {
+    if (entry.kind === "file") totalBytes += entry.byte_count ?? 0;
+  }
 
   return {
     entries,
     tree_manifest_sha256: sha256(canonicalJson(entries)),
-    file_count: fileCount,
-    symlink_count: symlinkCount,
+    file_count: fileEntries.length,
+    symlink_count: structuralEntries.filter((entry) => entry.kind === "symlink").length,
     total_bytes: totalBytes,
     multiply_linked: multiplyLinked,
   };

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -31,6 +31,52 @@ import type {
  */
 
 const PROJECTION_IMPLEMENTATION = "review-lsp.projection.v1+copy-source+dependency-facade-relative-workspace-links+derived-artifacts";
+
+interface VerifiedProjectionLease {
+  descriptor_binding: string;
+  execution_realpath: string;
+  execution_dev: number;
+  execution_ino: number;
+  execution_mode: number;
+}
+
+const verifiedProjectionLeases = new Map<string, VerifiedProjectionLease>();
+
+async function projectionLeaseFingerprint(
+  projection: ProjectionDescriptor,
+): Promise<VerifiedProjectionLease> {
+  const [executionRealpath, executionInfo] = await Promise.all([
+    realpath(projection.execution_root),
+    stat(projection.execution_root),
+  ]);
+  if (!executionInfo.isDirectory()) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} execution root is not a directory`,
+    );
+  }
+  if ((executionInfo.mode & 0o222) !== 0) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} execution root is not sealed read-only`,
+    );
+  }
+  return {
+    descriptor_binding: canonicalJson(projection),
+    execution_realpath: executionRealpath,
+    execution_dev: executionInfo.dev,
+    execution_ino: executionInfo.ino,
+    execution_mode: executionInfo.mode,
+  };
+}
+
+function sameProjectionLease(a: VerifiedProjectionLease, b: VerifiedProjectionLease): boolean {
+  return a.descriptor_binding === b.descriptor_binding
+    && a.execution_realpath === b.execution_realpath
+    && a.execution_dev === b.execution_dev
+    && a.execution_ino === b.execution_ino
+    && a.execution_mode === b.execution_mode;
+}
 
 export function projectionDirectory(stateDirectory: string, projectionId: string): string {
   return join(stateDirectory, "projections", projectionId);
@@ -449,6 +495,19 @@ export async function verifyProjectionDescriptor(
     );
   }
 
+  let lease: VerifiedProjectionLease;
+  try {
+    lease = await projectionLeaseFingerprint(projection);
+  } catch (error) {
+    if (error instanceof ReviewLspError) throw error;
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} execution identity is not readable: ${(error as Error).message}`,
+    );
+  }
+  const cached = verifiedProjectionLeases.get(projection.projection_id);
+  if (cached && sameProjectionLease(cached, lease)) return;
+
   const expectedDerivedIds = derivedArtifacts.map((artifact) => artifact.artifact_id);
   const expectedDerivedTrees = derivedArtifacts.map((artifact) => artifact.output_tree_manifest_sha256);
   const expectedDerivedRoots = derivedArtifacts.map((artifact) => artifact.output_root);
@@ -508,6 +567,8 @@ export async function verifyProjectionDescriptor(
       `projection ${projection.projection_id} entry-point gate changed after publication`,
     );
   }
+
+  verifiedProjectionLeases.set(projection.projection_id, lease);
 }
 
 export async function buildProjection(options: BuildProjectionOptions): Promise<ProjectionDescriptor> {

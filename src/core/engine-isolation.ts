@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { scanDependencyTree } from "./dependency-tree.js";
+import { verifyDependencySnapshot } from "./dependency-snapshot.js";
 import { ReviewLspError } from "./errors.js";
 import type {
   AdmittedEngineArtifact,
@@ -15,6 +16,42 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+interface AdmittedEngineLease {
+  artifact: AdmittedEngineArtifact;
+  root_realpath: string;
+  root_dev: number;
+  root_ino: number;
+  root_mode: number;
+}
+
+const admittedEngineLeases = new Map<string, AdmittedEngineLease>();
+
+async function engineRootFingerprint(root: string): Promise<Omit<AdmittedEngineLease, "artifact">> {
+  const [rootRealpath, info] = await Promise.all([realpath(root), stat(root)]);
+  if (!info.isDirectory()) {
+    throw new ReviewLspError("PROFILE_INVALID", `candidate TypeScript engine root is not a directory: ${root}`);
+  }
+  if ((info.mode & 0o222) !== 0) {
+    throw new ReviewLspError("PROFILE_INVALID", `candidate TypeScript engine root is not sealed read-only: ${root}`);
+  }
+  return {
+    root_realpath: rootRealpath,
+    root_dev: info.dev,
+    root_ino: info.ino,
+    root_mode: info.mode,
+  };
+}
+
+function sameEngineRoot(
+  a: Omit<AdmittedEngineLease, "artifact">,
+  b: Omit<AdmittedEngineLease, "artifact">,
+): boolean {
+  return a.root_realpath === b.root_realpath
+    && a.root_dev === b.root_dev
+    && a.root_ino === b.root_ino
+    && a.root_mode === b.root_mode;
+}
 
 /**
  * Admission and execution policy for a candidate-selected semantic engine.
@@ -59,6 +96,7 @@ export async function admitEngineArtifact(input: {
   snapshot: DependencySnapshotDescriptor;
   projectRoot?: string | null;
 }): Promise<AdmittedEngineArtifact | null> {
+  await verifyDependencySnapshot(input.snapshot);
   const roots = [
     input.projectRoot ? join(input.snapshot.dependency_root, input.projectRoot) : null,
     input.snapshot.dependency_root,
@@ -94,6 +132,13 @@ export async function admitEngineArtifact(input: {
       );
     }
 
+    const engineFingerprint = await engineRootFingerprint(engineRoot);
+    const engineLeaseKey = `${input.snapshot.snapshot_id}:${engineFingerprint.root_realpath}`;
+    const cached = admittedEngineLeases.get(engineLeaseKey);
+    if (cached && sameEngineRoot(cached, engineFingerprint)) {
+      return cached.artifact;
+    }
+
     const tree = await scanDependencyTree(engineRoot);
     const identityMaterial = {
       schema_version: "review-lsp.engine-artifact.v1" as const,
@@ -104,7 +149,7 @@ export async function admitEngineArtifact(input: {
       dependency_snapshot_id: input.snapshot.snapshot_id,
     };
 
-    return {
+    const artifact: AdmittedEngineArtifact = {
       ...identityMaterial,
       artifact_id: contentId("engine", identityMaterial),
       engine_root: engineRoot,
@@ -119,6 +164,8 @@ export async function admitEngineArtifact(input: {
         network: "DENIED",
       },
     };
+    admittedEngineLeases.set(engineLeaseKey, { artifact, ...engineFingerprint });
+    return artifact;
   }
 
   return null;

@@ -21,6 +21,52 @@ const COMPILER_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT_BYTES = 1_000_000;
 const DERIVED_POLICY_TEMPLATE_ROOT = "/__review_lsp_derived_policy_v1__";
 
+interface VerifiedDerivedLease {
+  descriptor_binding: string;
+  output_realpath: string;
+  output_dev: number;
+  output_ino: number;
+  output_mode: number;
+}
+
+const verifiedDerivedLeases = new Map<string, VerifiedDerivedLease>();
+
+async function derivedLeaseFingerprint(
+  artifact: DerivedWorkspaceArtifactDescriptor,
+): Promise<VerifiedDerivedLease> {
+  const [outputRealpath, outputInfo] = await Promise.all([
+    realpath(artifact.output_root),
+    stat(artifact.output_root),
+  ]);
+  if (!outputInfo.isDirectory()) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output root is not a directory`,
+    );
+  }
+  if ((outputInfo.mode & 0o222) !== 0) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output root is not sealed read-only`,
+    );
+  }
+  return {
+    descriptor_binding: canonicalJson(artifact),
+    output_realpath: outputRealpath,
+    output_dev: outputInfo.dev,
+    output_ino: outputInfo.ino,
+    output_mode: outputInfo.mode,
+  };
+}
+
+function sameDerivedLease(a: VerifiedDerivedLease, b: VerifiedDerivedLease): boolean {
+  return a.descriptor_binding === b.descriptor_binding
+    && a.output_realpath === b.output_realpath
+    && a.output_dev === b.output_dev
+    && a.output_ino === b.output_ino
+    && a.output_mode === b.output_mode;
+}
+
 function compilerArgvBinding(projectConfigPath: string): string[] {
   return [
     "<ADMITTED_NODE>",
@@ -81,6 +127,12 @@ function derivedArtifactIdentityMaterial(artifact: DerivedWorkspaceArtifactDescr
     strong_admission: artifact.strong_admission,
     limitation: artifact.limitation,
   };
+}
+
+interface DerivationIndexRecord {
+  schema_version: "review-lsp.derived-index.v1";
+  derivation_key: string;
+  artifact_id: string;
 }
 
 interface PackageManifest {
@@ -407,6 +459,31 @@ function diagnosticErrorCount(code: number | null, stdout: string, stderr: strin
   return matches && matches.length > 0 ? matches.length : null;
 }
 
+async function publishDerivationIndex(path: string, record: DerivationIndexRecord): Promise<void> {
+  const payload = `${JSON.stringify(record, null, 2)}\n`;
+  try {
+    await writeFile(path, payload, { mode: 0o400, flag: "wx" });
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  let existing: unknown;
+  try {
+    existing = JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `existing derivation index cannot be read: ${(error as Error).message}`,
+    );
+  }
+  if (canonicalJson(existing) !== canonicalJson(record)) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `existing derivation index ${record.derivation_key} points to different artifact state`,
+    );
+  }
+}
+
 export async function deriveWorkspaceArtifact(input: {
   candidate: CandidateDescriptor;
   snapshot: DependencySnapshotDescriptor;
@@ -441,6 +518,7 @@ export async function deriveWorkspaceArtifact(input: {
     candidate_id: input.candidate.candidate_id,
     source_manifest_sha256: input.candidate.source_manifest_sha256,
     dependency_snapshot_id: input.snapshot.snapshot_id,
+    projection_id: input.projection.projection_id,
     package_manifest_path: recipe.package_manifest_path,
     project_config_path: recipe.project_config_path,
     project_config_sha256: recipe.project_config_sha256,
@@ -450,7 +528,48 @@ export async function deriveWorkspaceArtifact(input: {
     mount_relative_path: recipe.mount_relative_path,
   });
   const derivedRoot = join(input.stateDirectory, "derived");
-  await mkdir(derivedRoot, { recursive: true, mode: 0o700 });
+  const derivationIndexRoot = join(derivedRoot, "by-derivation");
+  await Promise.all([
+    mkdir(derivedRoot, { recursive: true, mode: 0o700 }),
+    mkdir(derivationIndexRoot, { recursive: true, mode: 0o700 }),
+  ]);
+
+  const indexPath = join(derivationIndexRoot, `${derivationKey}.json`);
+  try {
+    const index = JSON.parse(await readFile(indexPath, "utf8")) as DerivationIndexRecord;
+    if (index.schema_version !== "review-lsp.derived-index.v1"
+      || index.derivation_key !== derivationKey
+      || !/^derived_[0-9a-f]{32}$/.test(index.artifact_id)) {
+      throw new ReviewLspError(
+        "DERIVED_ARTIFACT_INVALID",
+        `derived cache index ${derivationKey} is malformed or bound to different inputs`,
+      );
+    }
+    const existing = JSON.parse(
+      await readFile(join(derivedRoot, index.artifact_id, "derived-artifact.json"), "utf8"),
+    ) as DerivedWorkspaceArtifactDescriptor;
+    await verifyDerivedWorkspaceArtifact(existing, {
+      candidate: input.candidate,
+      snapshot: input.snapshot,
+      stateDirectory: input.stateDirectory,
+    });
+    if (!existing.strong_admission) {
+      throw new ReviewLspError(
+        "DERIVED_ARTIFACT_INVALID",
+        `derived cache index ${derivationKey} points to an advisory artifact`,
+      );
+    }
+    return existing;
+  } catch (error) {
+    if (error instanceof ReviewLspError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new ReviewLspError(
+        "DERIVED_ARTIFACT_INVALID",
+        `derived cache index ${derivationKey} cannot be read: ${(error as Error).message}`,
+      );
+    }
+  }
+
   const stagingRoot = join(derivedRoot, `.staging-${derivationKey}-${process.pid}-${randomUUID()}`);
   const outputRoot = join(stagingRoot, "output");
   const home = join(stagingRoot, "home");
@@ -580,8 +699,18 @@ export async function deriveWorkspaceArtifact(input: {
         snapshot: input.snapshot,
         stateDirectory: input.stateDirectory,
       });
+      await publishDerivationIndex(indexPath, {
+        schema_version: "review-lsp.derived-index.v1",
+        derivation_key: derivationKey,
+        artifact_id: existing.artifact_id,
+      });
       return existing;
     }
+    await publishDerivationIndex(indexPath, {
+      schema_version: "review-lsp.derived-index.v1",
+      derivation_key: derivationKey,
+      artifact_id: descriptor.artifact_id,
+    });
     return descriptor;
   } catch (error) {
     await makeTreeOwnerWritable(stagingRoot).catch(() => undefined);
@@ -604,6 +733,39 @@ export async function verifyDerivedWorkspaceArtifact(
     || artifact.dependency_snapshot_id !== input.snapshot.snapshot_id) {
     throw new ReviewLspError("DERIVED_ARTIFACT_INVALID", `derived artifact ${artifact.artifact_id} is bound to different inputs`);
   }
+
+  const expectedArtifactId = contentId("derived", derivedArtifactIdentityMaterial(artifact));
+  if (expectedArtifactId !== artifact.artifact_id) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} does not match its content-addressed identity`,
+    );
+  }
+
+  const expectedOutputRoot = join(input.stateDirectory, "derived", artifact.artifact_id, "output");
+  const [observedOutputRoot, canonicalExpectedOutputRoot] = await Promise.all([
+    realpath(artifact.output_root).catch(() => null),
+    realpath(expectedOutputRoot).catch(() => null),
+  ]);
+  if (!observedOutputRoot || !canonicalExpectedOutputRoot || observedOutputRoot !== canonicalExpectedOutputRoot) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output root is not its content-addressed publication path`,
+    );
+  }
+
+  let lease: VerifiedDerivedLease;
+  try {
+    lease = await derivedLeaseFingerprint(artifact);
+  } catch (error) {
+    if (error instanceof ReviewLspError) throw error;
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output identity is not readable: ${(error as Error).message}`,
+    );
+  }
+  const cached = verifiedDerivedLeases.get(artifact.artifact_id);
+  if (cached && sameDerivedLease(cached, lease)) return;
 
   const recipe = await strictRecipe(input.candidate, artifact.package_manifest_path);
   const expectedRecipe = canonicalJson({
@@ -681,26 +843,6 @@ export async function verifyDerivedWorkspaceArtifact(
     );
   }
 
-  const expectedArtifactId = contentId("derived", derivedArtifactIdentityMaterial(artifact));
-  if (expectedArtifactId !== artifact.artifact_id) {
-    throw new ReviewLspError(
-      "DERIVED_ARTIFACT_INVALID",
-      `derived artifact ${artifact.artifact_id} does not match its content-addressed identity`,
-    );
-  }
-
-  const expectedOutputRoot = join(input.stateDirectory, "derived", artifact.artifact_id, "output");
-  const [observedOutputRoot, canonicalExpectedOutputRoot] = await Promise.all([
-    realpath(artifact.output_root).catch(() => null),
-    realpath(expectedOutputRoot).catch(() => null),
-  ]);
-  if (!observedOutputRoot || !canonicalExpectedOutputRoot || observedOutputRoot !== canonicalExpectedOutputRoot) {
-    throw new ReviewLspError(
-      "DERIVED_ARTIFACT_INVALID",
-      `derived artifact ${artifact.artifact_id} output root is not its content-addressed publication path`,
-    );
-  }
-
   const scan = await scanDependencyTree(artifact.output_root);
   if (scan.multiply_linked.length > 0
     || scan.tree_manifest_sha256 !== artifact.output_tree_manifest_sha256
@@ -721,4 +863,6 @@ export async function verifyDerivedWorkspaceArtifact(
       `derived artifact ${artifact.artifact_id} claims strong admission without a zero-error, limitation-free compiler outcome`,
     );
   }
+
+  verifiedDerivedLeases.set(artifact.artifact_id, lease);
 }

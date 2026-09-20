@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { contentId } from "../../src/core/canonical.js";
+import { scanDependencyTree } from "../../src/core/dependency-tree.js";
 import {
   admitEngineArtifact,
   buildMacSandboxPolicy,
@@ -20,45 +22,64 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }).catch(() => undefined)));
 });
 
-/** Builds a snapshot-shaped directory holding a TypeScript package of the given shape. */
+async function sealFixtureTree(root: string): Promise<void> {
+  const info = await lstat(root);
+  if (info.isDirectory() && !info.isSymbolicLink()) {
+    for (const name of await readdir(root)) await sealFixtureTree(join(root, name));
+    await chmod(root, 0o500);
+    return;
+  }
+  if (!info.isSymbolicLink()) await chmod(root, (info.mode & 0o111) !== 0 ? 0o500 : 0o400);
+}
+
+async function snapshotDescriptor(root: string): Promise<DependencySnapshotDescriptor> {
+  const scan = await scanDependencyTree(root);
+  const identity = {
+    schema_version: "review-lsp.dependency-snapshot.v1" as const,
+    ecosystem: "node" as const,
+    package_manager: "pnpm" as const,
+    package_manager_version: "10.20.0",
+    platform: process.platform,
+    arch: process.arch,
+    input_set_id: "depin_00000000000000000000000000000000",
+    network_policy: "OFFLINE" as const,
+    script_policy: "IGNORE_SCRIPTS" as const,
+    lockfile_policy: "FROZEN" as const,
+    dependency_graph: "INCLUDES_DEV" as const,
+    tree_manifest_sha256: scan.tree_manifest_sha256,
+  };
+  await sealFixtureTree(root);
+  return {
+    ...identity,
+    snapshot_id: contentId("depsnap", identity),
+    input_manifest: [],
+    lockfile_binding: { path: "pnpm-lock.yaml", sha256: "0".repeat(64), byte_count: 1 },
+    workspace_binding: null,
+    patch_binding: [],
+    config_binding: {},
+    dependency_root: root,
+    file_count: scan.file_count,
+    symlink_count: scan.symlink_count,
+    total_bytes: scan.total_bytes,
+    materialization_method: "clone-or-copy",
+    created_at: new Date().toISOString(),
+  };
+}
+
+/** Builds a valid sealed snapshot holding a TypeScript package of the given shape. */
 async function snapshotWithEngine(
   version: string,
   shape: "TSSERVER_LEGACY" | "NATIVE_LSP" | "NEITHER",
+  entryBytes = "// tsserver\n",
 ): Promise<DependencySnapshotDescriptor> {
   const root = await mkdtemp(join(tmpdir(), "review-lsp-engine-"));
   roots.push(root);
   const engineRoot = join(root, "node_modules", "typescript", "lib");
   await mkdir(engineRoot, { recursive: true });
   await writeFile(join(root, "node_modules", "typescript", "package.json"), `${JSON.stringify({ name: "typescript", version })}\n`);
-  if (shape === "TSSERVER_LEGACY") await writeFile(join(engineRoot, "tsserver.js"), "// tsserver\n");
-  if (shape === "NATIVE_LSP") await writeFile(join(engineRoot, "tsc.js"), "// native launcher\n");
-
-  return {
-    schema_version: "review-lsp.dependency-snapshot.v1",
-    snapshot_id: "depsnap_00000000000000000000000000000000",
-    ecosystem: "node",
-    package_manager: "pnpm",
-    package_manager_version: "10.20.0",
-    platform: process.platform,
-    arch: process.arch,
-    input_set_id: "depin_00000000000000000000000000000000",
-    input_manifest: [],
-    lockfile_binding: { path: "pnpm-lock.yaml", sha256: "0".repeat(64), byte_count: 1 },
-    workspace_binding: null,
-    patch_binding: [],
-    config_binding: {},
-    network_policy: "OFFLINE",
-    script_policy: "IGNORE_SCRIPTS",
-    lockfile_policy: "FROZEN",
-    dependency_graph: "INCLUDES_DEV",
-    tree_manifest_sha256: "1".repeat(64),
-    dependency_root: root,
-    file_count: 0,
-    symlink_count: 0,
-    total_bytes: 0,
-    materialization_method: "clone-or-copy",
-    created_at: new Date().toISOString(),
-  };
+  if (shape === "TSSERVER_LEGACY") await writeFile(join(engineRoot, "tsserver.js"), entryBytes);
+  if (shape === "NATIVE_LSP") await writeFile(join(engineRoot, "tsc.js"), entryBytes);
+  return snapshotDescriptor(root);
 }
 
 function profile(enforced: boolean): ExecutionProfile {
@@ -94,8 +115,7 @@ describe("candidate-selected engine admission", () => {
 
   it("gives different identities to different engine bytes at the same version", async () => {
     const first = await admitEngineArtifact({ snapshot: await snapshotWithEngine("6.0.3", "TSSERVER_LEGACY") });
-    const second = await snapshotWithEngine("6.0.3", "TSSERVER_LEGACY");
-    await writeFile(join(second.dependency_root, "node_modules", "typescript", "lib", "tsserver.js"), "// different bytes\n");
+    const second = await snapshotWithEngine("6.0.3", "TSSERVER_LEGACY", "// different bytes\n");
     const changed = await admitEngineArtifact({ snapshot: second });
 
     expect(changed?.version).toBe(first?.version);
@@ -110,8 +130,7 @@ describe("candidate-selected engine admission", () => {
   it("returns nothing when the snapshot holds no TypeScript", async () => {
     const root = await mkdtemp(join(tmpdir(), "review-lsp-engine-empty-"));
     roots.push(root);
-    const snapshot = await snapshotWithEngine("6.0.3", "TSSERVER_LEGACY");
-    snapshot.dependency_root = root;
+    const snapshot = await snapshotDescriptor(root);
 
     expect(await admitEngineArtifact({ snapshot })).toBeNull();
   });

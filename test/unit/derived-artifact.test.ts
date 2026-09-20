@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,8 +30,21 @@ const projections: ProjectionDescriptor[] = [];
 afterEach(async () => {
   await Promise.all(projections.splice(0).map((projection) => removeProjection(projection).catch(() => undefined)));
   await Promise.all(candidates.splice(0).map((candidate) => removeCandidate(candidate).catch(() => undefined)));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }).catch(() => undefined)));
+  await Promise.all(roots.splice(0).map(async (root) => {
+    await chmod(join(root, "state", "fixture-snapshot", "dependencies"), 0o700).catch(() => undefined);
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
+  }));
 });
+
+async function sealFixtureTree(root: string): Promise<void> {
+  const info = await lstat(root);
+  if (info.isDirectory() && !info.isSymbolicLink()) {
+    for (const name of await readdir(root)) await sealFixtureTree(join(root, name));
+    await chmod(root, 0o500);
+    return;
+  }
+  if (!info.isSymbolicLink()) await chmod(root, (info.mode & 0o111) !== 0 ? 0o500 : 0o400);
+}
 
 async function git(repo: string, ...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", ["-C", repo, ...args], {
@@ -112,6 +125,7 @@ async function scenario(options: {
     verbatimSymlinks: true,
   });
   const scan = await scanDependencyTree(snapshotRoot);
+  await sealFixtureTree(snapshotRoot);
   const snapshotIdentity = {
     schema_version: "review-lsp.dependency-snapshot.v1" as const,
     ecosystem: "node" as const,
