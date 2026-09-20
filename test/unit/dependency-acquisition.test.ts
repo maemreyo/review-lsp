@@ -8,7 +8,7 @@ import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { acquireDependencies } from "../../src/core/dependency-acquisition.js";
 import { deriveDependencyInputs } from "../../src/core/dependency-inputs.js";
 import type { CandidateDescriptor } from "../../src/core/types.js";
-import { createPnpmFixture } from "../helpers/pnpm-fixture.js";
+import { createPnpmFixture, type PnpmFixtureShape } from "../helpers/pnpm-fixture.js";
 
 const roots: string[] = [];
 const candidates: CandidateDescriptor[] = [];
@@ -18,10 +18,10 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function scenario(): Promise<{ candidate: CandidateDescriptor; state: string }> {
+async function scenario(shape: PnpmFixtureShape = {}): Promise<{ candidate: CandidateDescriptor; state: string }> {
   const root = await mkdtemp(join(tmpdir(), "review-lsp-acq-"));
   roots.push(root);
-  const fixture = await createPnpmFixture(root);
+  const fixture = await createPnpmFixture(root, shape);
   const state = join(root, "state");
   const candidate = await prepareCandidate({ repo: fixture.repo, commit: fixture.commit, stateDirectory: state });
   candidates.push(candidate);
@@ -84,6 +84,35 @@ describe("explicit dependency acquisition", () => {
     expect(report.network_used).toBe(false);
     expect(report.limitation).toMatch(/absent from the Review-LSP acquisition store/);
     expect(report.remediation).toMatch(/explicit network policy/);
+  }, 120_000);
+
+  it("rejects a stale lockfile as unsupported rather than suggesting network acquisition", async () => {
+    const staleLockfile = [
+      "lockfileVersion: '9.0'",
+      "",
+      "settings:",
+      "  autoInstallPeers: true",
+      "  excludeLinksFromLockfile: false",
+      "",
+      "importers:",
+      "",
+      "  .: {}",
+      "",
+      "  packages/app: {}",
+      "",
+    ].join("\n");
+    const { candidate, state } = await scenario({ lockfile: staleLockfile });
+    const inputs = await deriveDependencyInputs(candidate);
+    if (!await seedCorepackCache(state)) {
+      throw new Error("P7 stale-lockfile gate requires cached pnpm 10.20.0");
+    }
+
+    const report = await acquireDependencies({ candidate, inputs, stateDirectory: state, networkPolicy: "OFFLINE" });
+
+    expect(report.state).toBe("UNSUPPORTED");
+    expect(report.network_used).toBe(false);
+    expect(report.limitation).toMatch(/lockfile does not match/i);
+    expect(report.remediation).toMatch(/candidate itself is inconsistent/i);
   }, 120_000);
 
   it("always records the policies the evidence depends on", async () => {

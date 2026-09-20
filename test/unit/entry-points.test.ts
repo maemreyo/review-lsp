@@ -73,6 +73,28 @@ describe("workspace entry-point resolvability gate", () => {
     expect(result.findings[0]?.limitation).toMatch(/absent from the projection/);
   });
 
+  it("keeps a script-requiring package incomplete instead of executing its lifecycle build", async () => {
+    const { root, manifests } = await workspace({
+      "packages/generated": {
+        manifest: {
+          name: "@fixture/generated",
+          types: "./dist/index.d.ts",
+          scripts: { prepare: "node generate-types.js" },
+        },
+        files: {
+          "src/index.ts": "export const generated = 1;\n",
+          "generate-types.js": "throw new Error('must never execute');\n",
+        },
+      },
+    });
+
+    const result = await run(root, manifests);
+    expect(result.state).toBe("INCOMPLETE");
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.declared_target).toBe("./dist/index.d.ts");
+    expect(result.findings[0]?.limitation).toMatch(/absent from the projection/);
+  });
+
   it("checks exports type conditions", async () => {
     const { root, manifests } = await workspace({
       "packages/a": {

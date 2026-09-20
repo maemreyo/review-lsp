@@ -71,6 +71,7 @@ async function scenario(options: {
   outDir?: string;
   source?: string;
   extendsConfig?: string;
+  compilerSource?: string;
 } = {}): Promise<{
   candidate: CandidateDescriptor;
   snapshot: DependencySnapshotDescriptor;
@@ -120,10 +121,14 @@ async function scenario(options: {
   const snapshotRoot = join(state, "fixture-snapshot", "dependencies");
   const localTypescriptRoot = dirname(fileURLToPath(import.meta.resolve("typescript/package.json")));
   await mkdir(join(snapshotRoot, "node_modules"), { recursive: true });
-  await cp(localTypescriptRoot, join(snapshotRoot, "node_modules", "typescript"), {
+  const fixtureTypeScriptRoot = join(snapshotRoot, "node_modules", "typescript");
+  await cp(localTypescriptRoot, fixtureTypeScriptRoot, {
     recursive: true,
     verbatimSymlinks: true,
   });
+  if (options.compilerSource !== undefined) {
+    await writeFile(join(fixtureTypeScriptRoot, "lib", "tsc.js"), options.compilerSource);
+  }
   const scan = await scanDependencyTree(snapshotRoot);
   await sealFixtureTree(snapshotRoot);
   const snapshotIdentity = {
@@ -264,6 +269,32 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
     expect(artifact.strong_admission).toBe(false);
     expect(artifact.limitation).toMatch(/compiler exited/);
     await expect(readFile(join(artifact.output_root, "index.d.ts"), "utf8")).resolves.toMatch(/answer/);
+    await expect(buildProjection({
+      candidate,
+      snapshot,
+      stateDirectory: state,
+      derivedArtifacts: [artifact],
+      workspaceManifests: ["package.json"],
+    })).rejects.toThrow(/advisory only/);
+  }, 120_000);
+
+  it("keeps a compiler crash with no parseable diagnostics below strong admission", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      compilerSource: "process.stderr.write('compiler crashed\\n'); process.exit(7);\n",
+    });
+
+    const artifact = await deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    });
+
+    expect(artifact.compiler_exit_code).toBe(7);
+    expect(artifact.diagnostic_error_count).toBeNull();
+    expect(artifact.strong_admission).toBe(false);
+    expect(artifact.limitation).toMatch(/diagnostic error count could not be determined/);
     await expect(buildProjection({
       candidate,
       snapshot,
