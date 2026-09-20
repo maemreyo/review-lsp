@@ -183,6 +183,7 @@ async function linkDerivedArtifacts(
   snapshot: DependencySnapshotDescriptor | null,
   artifacts: DerivedWorkspaceArtifactDescriptor[],
   executionRoot: string,
+  stateDirectory: string,
 ): Promise<string[]> {
   if (artifacts.length === 0) return [];
   if (!snapshot) {
@@ -190,7 +191,11 @@ async function linkDerivedArtifacts(
   }
   const mounts: string[] = [];
   for (const artifact of artifacts) {
-    await verifyDerivedWorkspaceArtifact(artifact, { candidate, snapshot });
+    await verifyDerivedWorkspaceArtifact(artifact, {
+      candidate,
+      snapshot,
+      stateDirectory,
+    });
     if (!artifact.strong_admission) {
       throw new ReviewLspError(
         "PROJECTION_INVALID",
@@ -298,7 +303,13 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
     const mounts = snapshot
       ? await linkDependencies(snapshot, stagingExecution, workspaceManifests)
       : [];
-    const derivedMounts = await linkDerivedArtifacts(candidate, snapshot, derivedArtifacts, stagingExecution);
+    const derivedMounts = await linkDerivedArtifacts(
+      candidate,
+      snapshot,
+      derivedArtifacts,
+      stagingExecution,
+      stateDirectory,
+    );
 
     const gate = await runEntryPointGate({
       projectionRoot: stagingExecution,

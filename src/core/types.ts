@@ -308,6 +308,9 @@ export interface DerivedWorkspaceArtifactDescriptor {
   fixed_compiler_argv: string[];
   mount_relative_path: string;
   execution_profile_kind: IsolationKind;
+  /** Stable binding for the enforcement implementation; unlike identity, excludes random staging paths. */
+  execution_profile_binding: string;
+  /** Exact runtime profile identity used for the build, retained for audit but not artifact addressing. */
   execution_profile_identity: string;
   compiler_exit_code: number;
   diagnostic_error_count: number | null;

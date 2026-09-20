@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 
 import { readCandidateFile } from "./candidate.js";
@@ -19,6 +19,69 @@ import type {
 
 const COMPILER_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT_BYTES = 1_000_000;
+const DERIVED_POLICY_TEMPLATE_ROOT = "/__review_lsp_derived_policy_v1__";
+
+function compilerArgvBinding(projectConfigPath: string): string[] {
+  return [
+    "<ADMITTED_NODE>",
+    "<ADMITTED_TSC>",
+    "-p",
+    projectConfigPath,
+    "--outDir",
+    "<DERIVED_OUTPUT>",
+    "--pretty",
+    "false",
+  ];
+}
+
+async function stableDerivedExecutionProfileBinding(): Promise<string> {
+  const policy = await buildMacSandboxPolicy({
+    readRoots: [
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "candidate"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "snapshot"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "prior-derived"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "engine"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "node"),
+    ],
+    writableRoots: [
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "output"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "home"),
+      join(DERIVED_POLICY_TEMPLATE_ROOT, "tmp"),
+    ],
+  });
+  const sandboxExecutableSha256 = sha256(await readFile("/usr/bin/sandbox-exec"));
+  return `review-lsp.derived-execution.v1:${sha256(policy.policy)}:sandbox-exec:${sandboxExecutableSha256}`;
+}
+
+function derivedArtifactIdentityMaterial(artifact: DerivedWorkspaceArtifactDescriptor) {
+  return {
+    candidate_id: artifact.candidate_id,
+    source_manifest_sha256: artifact.source_manifest_sha256,
+    dependency_snapshot_id: artifact.dependency_snapshot_id,
+    package_manifest_path: artifact.package_manifest_path,
+    package_name: artifact.package_name,
+    project_config_path: artifact.project_config_path,
+    project_config_sha256: artifact.project_config_sha256,
+    config_chain: artifact.config_chain,
+    compiler_artifact_id: artifact.compiler_artifact_id,
+    compiler_version: artifact.compiler_version,
+    compiler_entrypoint_sha256: artifact.compiler_entrypoint_sha256,
+    node_executable_sha256: artifact.node_executable_sha256,
+    fixed_compiler_argv: compilerArgvBinding(artifact.project_config_path),
+    mount_relative_path: artifact.mount_relative_path,
+    execution_profile_kind: artifact.execution_profile_kind,
+    execution_profile_binding: artifact.execution_profile_binding,
+    compiler_exit_code: artifact.compiler_exit_code,
+    diagnostic_error_count: artifact.diagnostic_error_count,
+    stdout_sha256: artifact.stdout_sha256,
+    stderr_sha256: artifact.stderr_sha256,
+    output_tree_manifest_sha256: artifact.output_tree_manifest_sha256,
+    output_file_count: artifact.output_file_count,
+    output_total_bytes: artifact.output_total_bytes,
+    strong_admission: artifact.strong_admission,
+    limitation: artifact.limitation,
+  };
+}
 
 interface PackageManifest {
   name?: unknown;
@@ -292,6 +355,17 @@ async function sealTree(root: string): Promise<void> {
   await chmod(root, (info.mode & 0o111) !== 0 ? 0o500 : 0o400);
 }
 
+async function makeTreeOwnerWritable(root: string): Promise<void> {
+  const info = await lstat(root).catch(() => null);
+  if (!info || info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    await chmod(root, 0o700).catch(() => undefined);
+    for (const name of await readdir(root)) await makeTreeOwnerWritable(join(root, name));
+    return;
+  }
+  await chmod(root, 0o600).catch(() => undefined);
+}
+
 function diagnosticErrorCount(code: number | null, stdout: string, stderr: string): number | null {
   if (code === 0) return 0;
   const matches = `${stdout}\n${stderr}`.match(/error TS\d+:/g);
@@ -407,48 +481,10 @@ export async function deriveWorkspaceArtifact(input: {
             ? `candidate compiler exited ${run.code} and diagnostic error count could not be determined`
             : `candidate compiler exited ${run.code} with ${errors} TypeScript error diagnostic(s)`;
 
-    const stableIdentity = {
-      candidate_id: input.candidate.candidate_id,
-      source_manifest_sha256: input.candidate.source_manifest_sha256,
-      dependency_snapshot_id: input.snapshot.snapshot_id,
-      package_manifest_path: recipe.package_manifest_path,
-      package_name: recipe.package_name,
-      project_config_path: recipe.project_config_path,
-      project_config_sha256: recipe.project_config_sha256,
-      config_chain: recipe.config_chain,
-      compiler_artifact_id: engine.artifact_id,
-      compiler_version: engine.version,
-      compiler_entrypoint_sha256: sha256(compilerBytes),
-      node_executable_sha256: nodeExecutableSha256,
-      fixed_compiler_argv: [
-        "<ADMITTED_NODE>",
-        "<ADMITTED_TSC>",
-        "-p",
-        recipe.project_config_path,
-        "--outDir",
-        "<DERIVED_OUTPUT>",
-        "--pretty",
-        "false",
-      ],
-      mount_relative_path: recipe.mount_relative_path,
-      execution_profile_kind: executionProfile.kind,
-      execution_profile_identity: executionProfile.identity,
-      compiler_exit_code: run.code,
-      diagnostic_error_count: errors,
-      stdout_sha256: sha256(run.stdout),
-      stderr_sha256: sha256(run.stderr),
-      output_tree_manifest_sha256: scan.tree_manifest_sha256,
-      output_file_count: scan.file_count,
-      output_total_bytes: scan.total_bytes,
-      strong_admission: strong,
-      limitation,
-    };
-    const artifactId = contentId("derived", stableIdentity);
-    const finalRoot = join(derivedRoot, artifactId);
-    const finalOutput = join(finalRoot, "output");
+    const executionProfileBinding = await stableDerivedExecutionProfileBinding();
     const descriptor: DerivedWorkspaceArtifactDescriptor = {
       schema_version: "review-lsp.derived-workspace-artifact.v1",
-      artifact_id: artifactId,
+      artifact_id: "",
       candidate_id: input.candidate.candidate_id,
       source_manifest_sha256: input.candidate.source_manifest_sha256,
       dependency_snapshot_id: input.snapshot.snapshot_id,
@@ -463,31 +499,28 @@ export async function deriveWorkspaceArtifact(input: {
       compiler_entrypoint_sha256: sha256(compilerBytes),
       node_executable: nodeExecutable,
       node_executable_sha256: nodeExecutableSha256,
-      fixed_compiler_argv: [
-        nodeExecutable,
-        compilerPath,
-        "-p",
-        configInProjection,
-        "--outDir",
-        outputRoot,
-        "--pretty",
-        "false",
-      ],
+      fixed_compiler_argv: compilerArgvBinding(recipe.project_config_path),
       mount_relative_path: recipe.mount_relative_path,
       execution_profile_kind: executionProfile.kind,
+      execution_profile_binding: executionProfileBinding,
       execution_profile_identity: executionProfile.identity,
       compiler_exit_code: run.code ?? -1,
       diagnostic_error_count: errors,
       stdout_sha256: sha256(run.stdout),
       stderr_sha256: sha256(run.stderr),
       output_tree_manifest_sha256: scan.tree_manifest_sha256,
-      output_root: finalOutput,
+      output_root: "",
       output_file_count: scan.file_count,
       output_total_bytes: scan.total_bytes,
       strong_admission: strong,
       limitation,
       created_at: new Date().toISOString(),
     };
+    const artifactId = contentId("derived", derivedArtifactIdentityMaterial(descriptor));
+    const finalRoot = join(derivedRoot, artifactId);
+    const finalOutput = join(finalRoot, "output");
+    descriptor.artifact_id = artifactId;
+    descriptor.output_root = finalOutput;
 
     await rm(home, { recursive: true, force: true });
     await rm(tmp, { recursive: true, force: true });
@@ -502,6 +535,7 @@ export async function deriveWorkspaceArtifact(input: {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+      await makeTreeOwnerWritable(stagingRoot);
       await rm(stagingRoot, { recursive: true, force: true });
       const existing = JSON.parse(
         await readFile(join(finalRoot, "derived-artifact.json"), "utf8"),
@@ -509,11 +543,13 @@ export async function deriveWorkspaceArtifact(input: {
       await verifyDerivedWorkspaceArtifact(existing, {
         candidate: input.candidate,
         snapshot: input.snapshot,
+        stateDirectory: input.stateDirectory,
       });
       return existing;
     }
     return descriptor;
   } catch (error) {
+    await makeTreeOwnerWritable(stagingRoot).catch(() => undefined);
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
@@ -521,18 +557,133 @@ export async function deriveWorkspaceArtifact(input: {
 
 export async function verifyDerivedWorkspaceArtifact(
   artifact: DerivedWorkspaceArtifactDescriptor,
-  input: { candidate: CandidateDescriptor; snapshot: DependencySnapshotDescriptor },
+  input: {
+    candidate: CandidateDescriptor;
+    snapshot: DependencySnapshotDescriptor;
+    stateDirectory: string;
+  },
 ): Promise<void> {
-  if (artifact.candidate_id !== input.candidate.candidate_id
+  if (artifact.schema_version !== "review-lsp.derived-workspace-artifact.v1"
+    || artifact.candidate_id !== input.candidate.candidate_id
     || artifact.source_manifest_sha256 !== input.candidate.source_manifest_sha256
     || artifact.dependency_snapshot_id !== input.snapshot.snapshot_id) {
     throw new ReviewLspError("DERIVED_ARTIFACT_INVALID", `derived artifact ${artifact.artifact_id} is bound to different inputs`);
   }
-  const scan = await scanDependencyTree(artifact.output_root);
-  if (scan.multiply_linked.length > 0 || scan.tree_manifest_sha256 !== artifact.output_tree_manifest_sha256) {
-    throw new ReviewLspError("DERIVED_ARTIFACT_INVALID", `derived artifact ${artifact.artifact_id} output tree changed after publication`);
+
+  const recipe = await strictRecipe(input.candidate, artifact.package_manifest_path);
+  const expectedRecipe = canonicalJson({
+    package_manifest_path: recipe.package_manifest_path,
+    package_name: recipe.package_name,
+    project_config_path: recipe.project_config_path,
+    project_config_sha256: recipe.project_config_sha256,
+    config_chain: recipe.config_chain,
+    mount_relative_path: recipe.mount_relative_path,
+  });
+  const observedRecipe = canonicalJson({
+    package_manifest_path: artifact.package_manifest_path,
+    package_name: artifact.package_name,
+    project_config_path: artifact.project_config_path,
+    project_config_sha256: artifact.project_config_sha256,
+    config_chain: artifact.config_chain,
+    mount_relative_path: artifact.mount_relative_path,
+  });
+  if (expectedRecipe !== observedRecipe) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} recipe no longer matches the exact candidate`,
+    );
   }
-  if (artifact.strong_admission && (artifact.compiler_exit_code !== 0 || artifact.diagnostic_error_count !== 0)) {
-    throw new ReviewLspError("DERIVED_ARTIFACT_INVALID", `derived artifact ${artifact.artifact_id} claims strong admission without zero-error compiler outcome`);
+
+  const engine = await admitEngineArtifact({
+    snapshot: input.snapshot,
+    projectRoot: recipe.package_root,
+  });
+  if (!engine || engine.artifact_id !== artifact.compiler_artifact_id || engine.version !== artifact.compiler_version) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} compiler binding is not the candidate-selected engine`,
+    );
+  }
+  const compilerPath = join(engine.engine_root, "lib", "tsc.js");
+  const compilerSha256 = sha256(await readFile(compilerPath));
+  if (artifact.compiler_entrypoint !== compilerPath || artifact.compiler_entrypoint_sha256 !== compilerSha256) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} compiler entrypoint changed after publication`,
+    );
+  }
+
+  const nodeExecutable = await realpath(process.execPath);
+  const nodeExecutableSha256 = sha256(await readFile(nodeExecutable));
+  if (artifact.node_executable !== nodeExecutable || artifact.node_executable_sha256 !== nodeExecutableSha256) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} Node runtime binding changed after publication`,
+    );
+  }
+
+  const expectedProfileBinding = await stableDerivedExecutionProfileBinding();
+  if (artifact.execution_profile_kind !== "MACOS_SANDBOX"
+    || artifact.execution_profile_binding !== expectedProfileBinding) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} execution-profile implementation is not the admitted sandbox`,
+    );
+  }
+  const sandboxExecutableSha256 = expectedProfileBinding.split(":sandbox-exec:").at(-1);
+  if (!sandboxExecutableSha256
+    || !artifact.execution_profile_identity.endsWith(`:sandbox-exec:${sandboxExecutableSha256}`)) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} runtime sandbox identity is inconsistent with its stable binding`,
+    );
+  }
+
+  if (canonicalJson(artifact.fixed_compiler_argv) !== canonicalJson(compilerArgvBinding(recipe.project_config_path))) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} compiler argv is not the constrained recipe`,
+    );
+  }
+
+  const expectedArtifactId = contentId("derived", derivedArtifactIdentityMaterial(artifact));
+  if (expectedArtifactId !== artifact.artifact_id) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} does not match its content-addressed identity`,
+    );
+  }
+
+  const expectedOutputRoot = join(input.stateDirectory, "derived", artifact.artifact_id, "output");
+  const [observedOutputRoot, canonicalExpectedOutputRoot] = await Promise.all([
+    realpath(artifact.output_root).catch(() => null),
+    realpath(expectedOutputRoot).catch(() => null),
+  ]);
+  if (!observedOutputRoot || !canonicalExpectedOutputRoot || observedOutputRoot !== canonicalExpectedOutputRoot) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output root is not its content-addressed publication path`,
+    );
+  }
+
+  const scan = await scanDependencyTree(artifact.output_root);
+  if (scan.multiply_linked.length > 0
+    || scan.tree_manifest_sha256 !== artifact.output_tree_manifest_sha256
+    || scan.file_count !== artifact.output_file_count
+    || scan.total_bytes !== artifact.output_total_bytes) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} output tree changed after publication`,
+    );
+  }
+
+  if (artifact.strong_admission
+    && (artifact.compiler_exit_code !== 0
+      || artifact.diagnostic_error_count !== 0
+      || artifact.limitation !== null)) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_INVALID",
+      `derived artifact ${artifact.artifact_id} claims strong admission without a zero-error, limitation-free compiler outcome`,
+    );
   }
 }
