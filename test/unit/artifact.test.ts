@@ -16,7 +16,7 @@ describe("artifact manifest", () => {
   it("binds the bundled provider, package metadata, and semantic toolchain contract", async () => {
     const root = await mkdtemp(join(tmpdir(), "review-lsp-artifact-"));
     roots.push(root);
-    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(root, "dist", "typescript-language-server", "lib"), { recursive: true });
     await writeFile(join(root, "package.json"), JSON.stringify({
       name: "review-lsp",
       version: "0.1.0-alpha.1",
@@ -26,9 +26,15 @@ describe("artifact manifest", () => {
       },
     }));
     await writeFile(join(root, "dist", "review-lsp.mjs"), "#!/usr/bin/env node\nconsole.log('provider');\n");
+    await writeFile(join(root, "dist", "typescript-language-server", "lib", "cli.mjs"), "console.log('tsls');\n");
+    await writeFile(join(root, "dist", "typescript-language-server", "package.json"), JSON.stringify({
+      name: "typescript-language-server",
+      version: "6.0.0",
+      type: "module",
+    }));
 
     const manifest = await buildArtifactManifest(root);
-    expect(manifest.identity_scope).toBe("provider_bundle_and_package_json");
+    expect(manifest.identity_scope).toBe("provider_bundle_server_bundle_and_package_json");
     expect(manifest.provider_entrypoint).toBe("dist/review-lsp.mjs");
     expect(manifest.semantic_toolchain).toEqual([
       { name: "typescript-language-server", version: "6.0.0" },
@@ -37,6 +43,8 @@ describe("artifact manifest", () => {
     expect(manifest.files.map((entry) => entry.path)).toEqual([
       "package.json",
       "dist/review-lsp.mjs",
+      "dist/typescript-language-server/lib/cli.mjs",
+      "dist/typescript-language-server/package.json",
     ]);
     await expect(verifyArtifactManifest(root, manifest)).resolves.toBeUndefined();
 
@@ -47,7 +55,7 @@ describe("artifact manifest", () => {
   it("invalidates the artifact when the semantic toolchain contract changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "review-lsp-artifact-toolchain-"));
     roots.push(root);
-    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(root, "dist", "typescript-language-server", "lib"), { recursive: true });
     await writeFile(join(root, "package.json"), JSON.stringify({
       name: "review-lsp",
       version: "0.1.0-alpha.1",
@@ -57,6 +65,12 @@ describe("artifact manifest", () => {
       },
     }));
     await writeFile(join(root, "dist", "review-lsp.mjs"), "#!/usr/bin/env node\n");
+    await writeFile(join(root, "dist", "typescript-language-server", "lib", "cli.mjs"), "console.log('tsls');\n");
+    await writeFile(join(root, "dist", "typescript-language-server", "package.json"), JSON.stringify({
+      name: "typescript-language-server",
+      version: "6.0.0",
+      type: "module",
+    }));
 
     const manifest = await buildArtifactManifest(root);
     await writeFile(join(root, "package.json"), JSON.stringify({

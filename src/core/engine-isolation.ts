@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { constants as fsConstants } from "node:fs";
 import { promisify } from "node:util";
 
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
@@ -10,6 +11,7 @@ import type {
   AdmittedEngineArtifact,
   DependencySnapshotDescriptor,
   ExecutionProfile,
+  TypeScriptProfile,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -63,13 +65,24 @@ export async function admitEngineArtifact(input: {
   ].filter((value): value is string => typeof value === "string");
 
   for (const root of roots) {
-    const engineRoot = join(root, "node_modules", "typescript");
+    const engineAlias = join(root, "node_modules", "typescript");
+    let engineRoot: string;
     let version: string;
     try {
+      engineRoot = await realpath(engineAlias);
+      const snapshotRoot = await realpath(input.snapshot.dependency_root);
+      const delta = relative(snapshotRoot, engineRoot);
+      if (delta === ".." || delta.startsWith(`..${sep}`) || isAbsolute(delta)) {
+        throw new ReviewLspError(
+          "DEPENDENCY_SNAPSHOT_ESCAPED",
+          "candidate TypeScript engine resolves outside the admitted dependency snapshot",
+        );
+      }
       const manifest = JSON.parse(await readFile(join(engineRoot, "package.json"), "utf8")) as { version?: unknown };
       if (typeof manifest.version !== "string") continue;
       version = manifest.version;
-    } catch {
+    } catch (error) {
+      if (error instanceof ReviewLspError) throw error;
       continue;
     }
 
@@ -119,6 +132,89 @@ export async function admitEngineArtifact(input: {
  * admission the host cannot honour. The distinction between absent and unreachable is kept
  * because it tells the operator what to do about it.
  */
+async function probeMacSandbox(): Promise<
+  { available: true; executable: string; sha256: string }
+  | { available: false; reason: string }
+> {
+  if (process.platform !== "darwin") {
+    return { available: false, reason: "macOS sandbox-exec is only available on darwin" };
+  }
+  const executable = "/usr/bin/sandbox-exec";
+  try {
+    await access(executable, fsConstants.X_OK);
+    return { available: true, executable, sha256: sha256(await readFile(executable)) };
+  } catch {
+    return { available: false, reason: "/usr/bin/sandbox-exec is unavailable or not executable" };
+  }
+}
+
+function sbplString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * Minimal enforced macOS profile for candidate-selected semantic engines.
+ *
+ * The engine may read the system runtime plus explicitly admitted semantic roots, may write
+ * only to the session-owned HOME/TMP roots, and has no network entitlement. The profile is
+ * passed directly to sandbox-exec; it is not a descriptive label.
+ */
+export async function buildMacSandboxPolicy(input: {
+  readRoots: string[];
+  writableRoots: string[];
+}): Promise<{ policy: string; identity: string }> {
+  const stableReadRoots = [...new Set(await Promise.all(input.readRoots.map(async (root) => (
+    await realpath(root).catch(() => root)
+  ))))].sort();
+  const stableWritableRoots = [...new Set(await Promise.all(input.writableRoots.map(async (root) => (
+    await realpath(root).catch(() => root)
+  ))))].sort();
+  const systemReadRoots = ["/System", "/usr", "/Library", "/private/etc", "/dev"];
+  const admittedRoots = [...new Set([...systemReadRoots, ...stableReadRoots, ...stableWritableRoots])];
+  const readRules = [...new Set([...systemReadRoots, ...stableReadRoots, ...stableWritableRoots])]
+    .map((root) => `(subpath "${sbplString(root)}")`)
+    .join(" ");
+  const writeRules = stableWritableRoots
+    .map((root) => `(subpath "${sbplString(root)}")`)
+    .join(" ");
+
+  // realpath(3) must lstat each ancestor before Node can reach an admitted leaf. Grant only
+  // metadata on those ancestors; their file contents remain unreadable unless separately
+  // admitted above.
+  const ancestorMetadata = new Set<string>();
+  for (const root of admittedRoots) {
+    let current = dirname(root);
+    while (current !== "/" && current !== ".") {
+      ancestorMetadata.add(current);
+      current = dirname(current);
+    }
+  }
+  const metadataRules = [...ancestorMetadata].sort()
+    .map((root) => `(literal "${sbplString(root)}")`)
+    .join(" ");
+
+  const policy = [
+    "(version 1)",
+    "(deny default)",
+    "(import \"system.sb\")",
+    "(deny network*)",
+    "(allow process*)",
+    "(allow sysctl-read)",
+    "(allow mach-lookup)",
+    ...(metadataRules ? [`(allow file-read-metadata ${metadataRules})`] : []),
+    `(allow file-read* ${readRules})`,
+    ...(writeRules ? [`(allow file-write* ${writeRules})`] : []),
+  ].join("\n");
+  return {
+    policy,
+    identity: `macos-sandbox:${sha256(canonicalJson({
+      read_roots: stableReadRoots,
+      writable_roots: stableWritableRoots,
+      policy_sha256: sha256(policy),
+    }))}`,
+  };
+}
+
 async function probeDocker(): Promise<{ available: true } | { available: false; reason: string }> {
   try {
     await execFileAsync("docker", ["version", "--format", "{{.Server.Os}}"], { timeout: 10_000 });
@@ -147,28 +243,49 @@ async function probeDocker(): Promise<{ available: true } | { available: false; 
  */
 export async function resolveExecutionProfile(options: {
   preferContainer?: boolean;
+  preferMacSandbox?: boolean;
   platform?: NodeJS.Platform;
+  readRoots?: string[];
+  writableRoots?: string[];
 } = {}): Promise<ExecutionProfile> {
   const platform = options.platform ?? process.platform;
 
   let unavailableReason = `no enforced execution profile was requested on ${platform}`;
-  if (options.preferContainer !== false) {
-    const docker = await probeDocker();
-    if (docker.available) {
+
+  // When the caller explicitly disables container preference it is asking for an unenforced
+  // host probe (used by tests and policy checks), so do not silently substitute another
+  // enforced profile.
+  if (platform === "darwin" && options.preferContainer !== false && options.preferMacSandbox !== false) {
+    const sandbox = await probeMacSandbox();
+    if (sandbox.available) {
+      const policy = await buildMacSandboxPolicy({
+        readRoots: options.readRoots ?? [],
+        writableRoots: options.writableRoots ?? [],
+      });
       return {
         schema_version: "review-lsp.execution-profile.v1",
-        kind: "CONTAINER_READ_ONLY",
+        kind: "MACOS_SANDBOX",
         enforced: true,
         platform,
-        identity: `container:${platform}`,
+        identity: `${policy.identity}:sandbox-exec:${sandbox.sha256}`,
         reason: null,
       };
     }
-    unavailableReason = docker.reason;
+    unavailableReason = sandbox.reason;
   }
 
-  // No enforced local sandbox profile is defined yet for any platform. Naming one here
-  // without implementing the confinement would be the silent fallback D11 forbids.
+  if (options.preferContainer !== false) {
+    const docker = await probeDocker();
+    if (docker.available) {
+      // Container enforcement is implemented by the dedicated container-query path. A normal
+      // in-process semantic session does not become container-confined merely because Docker
+      // is reachable, so this generic resolver does not grant a false enforced profile here.
+      unavailableReason = "Docker is reachable, but this semantic session is not running through the dedicated container execution path";
+    } else {
+      unavailableReason = docker.reason;
+    }
+  }
+
   return {
     schema_version: "review-lsp.execution-profile.v1",
     kind: "TRUSTED_LOCAL",
@@ -200,6 +317,101 @@ export function engineMayClaimExactProject(input: {
     };
   }
   return { permitted: true, reason: null };
+}
+
+export interface CandidateEngineLaunch {
+  command: string;
+  args: string[];
+  initializationOptions: unknown;
+  implementation: string;
+  typescriptVersion: string;
+  projectEngineAdmitted: true;
+}
+
+/**
+ * Builds the actual launch that makes the admitted project engine answer.
+ *
+ * Legacy TypeScript uses the pinned Review-LSP language-server wrapper but routes that wrapper
+ * to the admitted project's tsserver tree. TypeScript 7 uses its admitted native LSP entrypoint.
+ * On macOS the whole answering process is wrapped in the exact sandbox profile represented by
+ * the execution-profile identity. Unsupported enforcement kinds fail closed.
+ */
+export async function buildCandidateEngineLaunch(input: {
+  artifact: AdmittedEngineArtifact;
+  profile: TypeScriptProfile;
+  executionProfile: ExecutionProfile;
+  semanticRoot: string;
+  writableRoots: string[];
+  additionalReadRoots?: string[];
+}): Promise<CandidateEngineLaunch> {
+  if (!input.executionProfile.enforced) {
+    throw new ReviewLspError(
+      "PROFILE_INVALID",
+      input.executionProfile.reason ?? "candidate engine execution profile is not enforced",
+    );
+  }
+
+  let baseCommand: string;
+  let baseArgs: string[];
+  let initializationOptions: unknown;
+  let implementation: string;
+
+  if (input.artifact.engine_kind === "TSSERVER_LEGACY") {
+    baseCommand = input.profile.node_executable;
+    baseArgs = [input.profile.server_entrypoint, ...input.profile.args];
+    initializationOptions = {
+      ...input.profile.initialization_options,
+      disableAutomaticTypingAcquisition: true,
+      plugins: [],
+      tsserver: {
+        ...input.profile.initialization_options.tsserver,
+        path: input.artifact.engine_root,
+        fallbackPath: input.artifact.engine_root,
+        logVerbosity: "off",
+        useSyntaxServer: "never",
+      },
+    };
+    implementation = "typescript-language-server+candidate-tsserver";
+  } else {
+    baseCommand = input.profile.node_executable;
+    baseArgs = [input.artifact.entrypoint, "--lsp", "--stdio"];
+    initializationOptions = {};
+    implementation = "typescript-native-lsp";
+  }
+
+  if (input.executionProfile.kind === "MACOS_SANDBOX") {
+    const serverRoot = input.profile.server_runtime_root;
+    const policy = await buildMacSandboxPolicy({
+      readRoots: [
+        input.semanticRoot,
+        input.artifact.engine_root,
+        input.profile.typescript_root,
+        serverRoot,
+        dirname(input.profile.node_executable),
+        ...(input.additionalReadRoots ?? []),
+      ],
+      writableRoots: input.writableRoots,
+    });
+    if (!input.executionProfile.identity.startsWith(policy.identity)) {
+      throw new ReviewLspError(
+        "PROFILE_INVALID",
+        "execution-profile identity does not match the sandbox policy required by the candidate engine",
+      );
+    }
+    return {
+      command: "/usr/bin/sandbox-exec",
+      args: ["-p", policy.policy, baseCommand, ...baseArgs],
+      initializationOptions,
+      implementation,
+      typescriptVersion: input.artifact.version,
+      projectEngineAdmitted: true,
+    };
+  }
+
+  throw new ReviewLspError(
+    "PROFILE_INVALID",
+    `normal semantic sessions cannot execute candidate engines under ${input.executionProfile.kind}; use a supported enforced launch path`,
+  );
 }
 
 export function engineArtifactBinding(artifact: AdmittedEngineArtifact): string {

@@ -10,7 +10,7 @@ import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
 import { assertCoordinateExpectation, buildCoordinateContext } from "./coordinate.js";
 import { classifyProjectionUri, verifyProjectionSource } from "./projection.js";
-import { admitEngineArtifact, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
+import { admitEngineArtifact, buildCandidateEngineLaunch, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
 import {
   alignmentBlocksStrongAdmission,
   assessToolchainAlignment,
@@ -21,6 +21,7 @@ import {
 import { persistReceipt } from "./receipts.js";
 import { verifyTypeScriptProfile } from "./profile.js";
 import type {
+  AdmittedEngineArtifact,
   BindingState,
   CandidateDescriptor,
   CoordinateExpectation,
@@ -29,6 +30,7 @@ import type {
   ExecutionProfile,
   IsolationKind,
   ProjectionDescriptor,
+  ResolvingProject,
   SemanticReceipt,
   SemanticToolchainEvidence,
   TypeScriptProfile,
@@ -124,12 +126,13 @@ async function bindDefinitionUri(
   candidate: CandidateDescriptor,
   profile: TypeScriptProfile,
   uri: string,
-  roots: { executionRoot: string; dependencyRoot?: string | undefined },
+  roots: { executionRoot: string; dependencyRoot?: string | undefined; derivedRoots?: string[] | undefined },
 ): Promise<DefinitionBinding> {
-  const serverRoot = dirname(dirname(profile.server_entrypoint));
+  const serverRoot = profile.server_runtime_root;
   const classified = await classifyProjectionUri(uri, {
     executionRoot: roots.executionRoot,
     dependencyRoot: roots.dependencyRoot,
+    derivedRoots: roots.derivedRoots,
     toolchainRoots: [profile.typescript_root, serverRoot],
   });
 
@@ -175,13 +178,6 @@ export class SemanticSession {
   readonly sessionEpoch = 1;
   readonly environment: EnvironmentManifest;
   private closed = false;
-  private cachedExecutionProfile: ExecutionProfile | undefined;
-
-  /** Probing the host is not free, and the answer cannot change within a session. */
-  private async executionProfile(): Promise<ExecutionProfile> {
-    this.cachedExecutionProfile ??= await resolveExecutionProfile();
-    return this.cachedExecutionProfile;
-  }
 
   private constructor(
     readonly candidate: CandidateDescriptor,
@@ -192,6 +188,16 @@ export class SemanticSession {
     private readonly driver: StdioLspDriver,
     private readonly projection: ProjectionDescriptor | null = null,
     private readonly snapshot: DependencySnapshotDescriptor | null = null,
+    private readonly boundResolvingProject: ResolvingProject | null = null,
+    private readonly candidateEngine: AdmittedEngineArtifact | null = null,
+    private readonly executionProfileEvidence: ExecutionProfile = {
+      schema_version: "review-lsp.execution-profile.v1",
+      kind: "TRUSTED_LOCAL",
+      enforced: false,
+      platform: process.platform,
+      identity: `native:${process.platform}:${process.arch}`,
+      reason: "candidate-selected engine is not in use",
+    },
   ) {
     this.sessionId = contentId("sess", {
       candidate_id: candidate.candidate_id,
@@ -220,25 +226,22 @@ export class SemanticSession {
      * binds candidate bytes rather than whatever the projection happens to hold.
      */
     projection?: ProjectionDescriptor | null;
+    /** Project that owns all documents queried through this session. */
+    resolvingProject?: ResolvingProject | null;
   }): Promise<SemanticSession> {
     await verifyCandidateIntegrity(input.candidate);
     await verifyTypeScriptProfile(input.profile);
-    const isolation = input.isolation ?? input.candidate.isolation;
-    const isolationIdentity = input.isolationIdentity
-      ?? (isolation === "TRUSTED_LOCAL" ? `native:${process.platform}:${process.arch}` : "container:unbound");
     const projection = input.projection ?? null;
+    const snapshot = input.snapshot ?? null;
+    const resolvingProject = input.resolvingProject ?? null;
     if (projection) await verifyProjectionSource(projection, input.candidate);
-    const environment = await buildEnvironmentManifest(input.candidate, input.profile, {
-      isolation,
-      isolationIdentity,
-      snapshot: input.snapshot ?? null,
-      projection,
-    });
 
+    const semanticRoot = projection?.execution_root ?? input.candidate.source_root;
     const provisionalSessionId = contentId("sessroot", {
       candidate_id: input.candidate.candidate_id,
-      environment_manifest_sha256: environment.environment_manifest_sha256,
+      source_manifest_sha256: input.candidate.source_manifest_sha256,
       profile_sha256: input.profile.profile_sha256,
+      resolving_project_identity: resolvingProject ? resolvingProjectIdentity(resolvingProject) : null,
       pid: process.pid,
       nonce: performance.now(),
     });
@@ -249,11 +252,60 @@ export class SemanticSession {
       mkdir(home, { recursive: true, mode: 0o700 }),
       mkdir(tmp, { recursive: true, mode: 0o700 }),
     ]);
+
+    const candidateEngine = snapshot && resolvingProject
+      ? await admitEngineArtifact({ snapshot, projectRoot: resolvingProject.project_root }).catch(() => null)
+      : null;
+    const serverRoot = input.profile.server_runtime_root;
+    const engineReadRoots = candidateEngine
+      ? [
+          semanticRoot,
+          candidateEngine.engine_root,
+          input.profile.typescript_root,
+          serverRoot,
+          dirname(input.profile.node_executable),
+          ...(snapshot ? [snapshot.dependency_root] : []),
+        ]
+      : [];
+    const executionProfile = candidateEngine
+      ? await resolveExecutionProfile({
+          readRoots: engineReadRoots,
+          writableRoots: [home, tmp],
+        })
+      : await resolveExecutionProfile({ preferContainer: false });
+
+    const launch = candidateEngine && engineMayClaimExactProject({ artifact: candidateEngine, profile: executionProfile }).permitted
+      ? await buildCandidateEngineLaunch({
+          artifact: candidateEngine,
+          profile: input.profile,
+          executionProfile,
+          semanticRoot,
+          writableRoots: [home, tmp],
+          additionalReadRoots: snapshot ? [snapshot.dependency_root] : [],
+        })
+      : undefined;
+
+    const semanticIsolation = launch ? executionProfile.kind : (input.isolation ?? input.candidate.isolation);
+    const semanticIsolationIdentity = launch
+      ? executionProfile.identity
+      : input.isolationIdentity
+        ?? (semanticIsolation === "TRUSTED_LOCAL"
+          ? `native:${process.platform}:${process.arch}`
+          : `${semanticIsolation.toLowerCase()}:unbound`);
+    const environment = await buildEnvironmentManifest(input.candidate, input.profile, {
+      isolation: semanticIsolation,
+      isolationIdentity: semanticIsolationIdentity,
+      snapshot,
+      projection,
+    });
+
     const driver = new StdioLspDriver(
       input.profile,
-      projection?.execution_root ?? input.candidate.source_root,
+      semanticRoot,
       candidateSafeEnvironment({ home, tmp, profile: input.profile }),
       input.requestTimeoutMs ?? 10_000,
+      1_000,
+      launch,
     );
     await driver.start();
     return new SemanticSession(
@@ -261,10 +313,13 @@ export class SemanticSession {
       input.profile,
       input.stateDirectory,
       environment,
-      isolation,
+      semanticIsolation,
       driver,
       projection,
-      input.snapshot ?? null,
+      snapshot,
+      resolvingProject,
+      candidateEngine,
+      executionProfile,
     );
   }
 
@@ -345,49 +400,50 @@ export class SemanticSession {
     // The engine that answers is selected per document's owning project, so alignment is
     // assessed there rather than once for the whole repository.
     const resolvingProject = resolveProjectForDocument(this.candidate, input.path);
+    if (this.boundResolvingProject
+      && resolvingProjectIdentity(this.boundResolvingProject) !== resolvingProjectIdentity(resolvingProject)) {
+      throw new ReviewLspError(
+        "PROFILE_INVALID",
+        "semantic session is bound to a different resolving project; acquire a project-specific runtime",
+      );
+    }
     const projectToolchain = await resolveProjectToolchain({
       candidate: this.candidate,
       snapshot: this.snapshot,
       projectRoot: resolvingProject.project_root,
     });
-    // Admitting the candidate's engine and being allowed to run it are separate questions,
-    // and both are separate from whether it actually answered. Today Review-LSP's own bundled
-    // TypeScript always answers, because engine routing is not implemented, so
-    // `engineIsProjectAdmitted` stays false regardless of what admission would permit.
-    const candidateEngine = this.snapshot
-      ? await admitEngineArtifact({ snapshot: this.snapshot, projectRoot: resolvingProject.project_root })
-        .catch(() => null)
-      : null;
-    const executionProfile = await this.executionProfile();
-    const strongAdmission = engineMayClaimExactProject({ artifact: candidateEngine, profile: executionProfile });
+    const strongAdmission = engineMayClaimExactProject({
+      artifact: this.candidateEngine,
+      profile: this.executionProfileEvidence,
+    });
 
     const assessment = assessToolchainAlignment({
       projectVersion: projectToolchain.version,
       projectVersionSource: projectToolchain.source,
-      engineVersion: this.profile.typescript_version,
-      engineIsProjectAdmitted: false,
+      engineVersion: this.driver.launch.typescriptVersion,
+      engineIsProjectAdmitted: this.driver.launch.projectEngineAdmitted,
     });
     const semanticToolchain: SemanticToolchainEvidence = {
       resolving_project: resolvingProject,
       resolving_project_identity: resolvingProjectIdentity(resolvingProject),
       project_toolchain: { typescript_version: projectToolchain.version, source: projectToolchain.source },
       semantic_engine: {
-        implementation: "typescript-language-server",
-        typescript_version: this.profile.typescript_version,
-        is_project_admitted: false,
+        implementation: this.driver.launch.implementation,
+        typescript_version: this.driver.launch.typescriptVersion,
+        is_project_admitted: this.driver.launch.projectEngineAdmitted,
       },
-      candidate_engine: candidateEngine
+      candidate_engine: this.candidateEngine
         ? {
-            artifact_id: candidateEngine.artifact_id,
-            version: candidateEngine.version,
-            engine_kind: candidateEngine.engine_kind,
-            tree_manifest_sha256: candidateEngine.tree_manifest_sha256,
+            artifact_id: this.candidateEngine.artifact_id,
+            version: this.candidateEngine.version,
+            engine_kind: this.candidateEngine.engine_kind,
+            tree_manifest_sha256: this.candidateEngine.tree_manifest_sha256,
           }
         : null,
       execution_profile: {
-        kind: executionProfile.kind,
-        enforced: executionProfile.enforced,
-        identity: executionProfile.identity,
+        kind: this.executionProfileEvidence.kind,
+        enforced: this.executionProfileEvidence.enforced,
+        identity: this.executionProfileEvidence.identity,
       },
       toolchain_alignment: assessment.alignment,
       toolchain_alignment_reason: assessment.reason,
@@ -419,6 +475,7 @@ export class SemanticSession {
         {
           executionRoot: this.projection?.execution_root ?? this.candidate.source_root,
           dependencyRoot: this.snapshot?.dependency_root,
+          derivedRoots: this.projection?.derived_artifact_roots ?? [],
         },
       )));
       if (bindings.some((binding) => binding.classification === "UNBOUND")) {

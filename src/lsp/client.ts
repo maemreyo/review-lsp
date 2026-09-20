@@ -31,6 +31,15 @@ interface RequestOutcome<T> {
   durationMs: number;
 }
 
+export interface LspLaunchSpec {
+  command: string;
+  args: string[];
+  initializationOptions: unknown;
+  implementation: string;
+  typescriptVersion: string;
+  projectEngineAdmitted: boolean;
+}
+
 export interface OpenDocument {
   path: string;
   uri: string;
@@ -46,6 +55,7 @@ export class StdioLspDriver {
   private initialized = false;
   private closed = false;
   private exited = false;
+  private stderrTail = "";
   private serverInfo: unknown;
   private capabilities: InitializeResult["capabilities"] | undefined;
 
@@ -55,8 +65,16 @@ export class StdioLspDriver {
     private readonly env: NodeJS.ProcessEnv,
     private readonly requestTimeoutMs = 10_000,
     private readonly shutdownGraceMs = 1_000,
+    readonly launch: LspLaunchSpec = {
+      command: profile.node_executable,
+      args: [profile.server_entrypoint, ...profile.args],
+      initializationOptions: profile.initialization_options,
+      implementation: "typescript-language-server",
+      typescriptVersion: profile.typescript_version,
+      projectEngineAdmitted: false,
+    },
   ) {
-    this.child = spawn(profile.node_executable, [profile.server_entrypoint, ...profile.args], {
+    this.child = spawn(launch.command, launch.args, {
       cwd: rootDir,
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -107,7 +125,7 @@ export class StdioLspDriver {
           workspaceFolders: true,
         },
       },
-      initializationOptions: this.profile.initialization_options,
+      initializationOptions: this.launch.initializationOptions,
       trace: "off",
     });
     this.serverInfo = initialized.value.serverInfo ?? null;
@@ -207,7 +225,9 @@ export class StdioLspDriver {
         void error;
       }
     });
-    this.child.stderr.on("data", () => undefined);
+    this.child.stderr.on("data", (chunk: Buffer) => {
+      this.stderrTail = `${this.stderrTail}${chunk.toString("utf8")}`.slice(-8_192);
+    });
   }
 
   private async request<T>(method: string, params?: unknown, timeoutMs = this.requestTimeoutMs): Promise<RequestOutcome<T>> {
@@ -226,7 +246,12 @@ export class StdioLspDriver {
       return { value, durationMs: Math.max(0, performance.now() - started) };
     } catch (error) {
       if (error instanceof ReviewLspError) throw error;
-      throw new ReviewLspError("LSP_PROTOCOL_ERROR", `${method} failed: ${error instanceof Error ? error.message : String(error)}`);
+      const detail = error instanceof Error ? error.message : String(error);
+      const stderr = this.stderrTail.trim();
+      throw new ReviewLspError(
+        "LSP_PROTOCOL_ERROR",
+        `${method} failed: ${detail}${stderr ? `; server stderr: ${stderr}` : ""}`,
+      );
     } finally {
       if (timer) clearTimeout(timer);
     }

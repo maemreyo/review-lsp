@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
+import { scanDependencyTree } from "./dependency-tree.js";
 import { ReviewLspError } from "./errors.js";
 import type {
   AcquisitionNetworkPolicy,
@@ -57,6 +58,155 @@ function corepackHome(stateDirectory: string): string {
 
 function acquisitionWorkRoot(stateDirectory: string): string {
   return join(stateDirectory, "dependency-acquisition", "work");
+}
+
+export interface AcquiredDependencyTreeDescriptor {
+  schema_version: "review-lsp.acquired-dependency-tree.v1";
+  input_set_id: string;
+  dependency_root: string;
+  tree_manifest_sha256: string;
+  file_count: number;
+  symlink_count: number;
+  total_bytes: number;
+  materialization_method: "pnpm-install-clone-or-copy";
+  created_at: string;
+}
+
+function acquiredTreeDirectory(stateDirectory: string, inputSetId: string): string {
+  return join(stateDirectory, "dependency-acquisition", "materialized", inputSetId);
+}
+
+function acquiredTreeDescriptorPath(stateDirectory: string, inputSetId: string): string {
+  return join(acquiredTreeDirectory(stateDirectory, inputSetId), "acquired-tree.json");
+}
+
+async function removeNonDependencyState(root: string, relativePath = ""): Promise<void> {
+  const absolute = relativePath ? join(root, relativePath) : root;
+  const info = await lstat(absolute).catch(() => undefined);
+  if (!info || info.isSymbolicLink() || !info.isDirectory()) return;
+  for (const name of await readdir(absolute)) {
+    const child = join(absolute, name);
+    if (name === ".pnpm-workspace-state-v1.json" || name === ".modules.yaml") {
+      await rm(child, { recursive: true, force: true }).catch(() => undefined);
+      continue;
+    }
+    await removeNonDependencyState(root, relativePath ? join(relativePath, name) : name);
+  }
+}
+
+async function pruneToDependencyMaterial(root: string, relativePath = ""): Promise<boolean> {
+  const absolute = relativePath ? join(root, relativePath) : root;
+  let keptAnything = false;
+  for (const name of await readdir(absolute)) {
+    const childRelative = relativePath ? join(relativePath, name) : name;
+    const childAbsolute = join(absolute, name);
+    if (name === "node_modules") {
+      keptAnything = true;
+      continue;
+    }
+    const info = await lstat(childAbsolute);
+    if (info.isDirectory() && !info.isSymbolicLink()) {
+      if (await pruneToDependencyMaterial(root, childRelative)) keptAnything = true;
+      else await rm(childAbsolute, { recursive: true, force: true });
+      continue;
+    }
+    await rm(childAbsolute, { force: true });
+  }
+  return keptAnything;
+}
+
+async function makeOwnerWritable(root: string): Promise<void> {
+  const info = await lstat(root).catch(() => undefined);
+  if (!info || info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    await chmod(root, 0o700).catch(() => undefined);
+    for (const name of await readdir(root)) await makeOwnerWritable(join(root, name));
+    return;
+  }
+  await chmod(root, 0o600).catch(() => undefined);
+}
+
+export async function readAcquiredDependencyTreeDescriptor(
+  stateDirectory: string,
+  inputSetId: string,
+): Promise<AcquiredDependencyTreeDescriptor | null> {
+  let descriptor: AcquiredDependencyTreeDescriptor;
+  try {
+    descriptor = JSON.parse(await readFile(acquiredTreeDescriptorPath(stateDirectory, inputSetId), "utf8")) as AcquiredDependencyTreeDescriptor;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const expectedRoot = join(acquiredTreeDirectory(stateDirectory, inputSetId), "dependencies");
+  if (descriptor.schema_version !== "review-lsp.acquired-dependency-tree.v1"
+    || descriptor.input_set_id !== inputSetId
+    || descriptor.dependency_root !== expectedRoot) {
+    throw new ReviewLspError("DEPENDENCY_ACQUISITION_FAILED", "materialized acquisition descriptor is not bound to the requested input set/state root");
+  }
+  return descriptor;
+}
+
+export async function loadAcquiredDependencyTree(
+  stateDirectory: string,
+  inputSetId: string,
+): Promise<AcquiredDependencyTreeDescriptor | null> {
+  const descriptor = await readAcquiredDependencyTreeDescriptor(stateDirectory, inputSetId);
+  if (!descriptor) return null;
+  const scan = await scanDependencyTree(descriptor.dependency_root);
+  if (scan.multiply_linked.length > 0
+    || scan.tree_manifest_sha256 !== descriptor.tree_manifest_sha256
+    || scan.file_count !== descriptor.file_count
+    || scan.symlink_count !== descriptor.symlink_count
+    || scan.total_bytes !== descriptor.total_bytes) {
+    throw new ReviewLspError("DEPENDENCY_ACQUISITION_FAILED", "materialized acquisition tree changed after publication");
+  }
+  return descriptor;
+}
+
+async function publishAcquiredDependencyTree(
+  stateDirectory: string,
+  inputSetId: string,
+  projectRoot: string,
+): Promise<AcquiredDependencyTreeDescriptor> {
+  await removeNonDependencyState(projectRoot);
+  await pruneToDependencyMaterial(projectRoot);
+  const scan = await scanDependencyTree(projectRoot);
+  if (scan.multiply_linked.length > 0) {
+    throw new ReviewLspError(
+      "DEPENDENCY_ACQUISITION_FAILED",
+      `materialized acquisition contains hard-linked files, for example ${scan.multiply_linked[0]}`,
+    );
+  }
+
+  const parent = join(stateDirectory, "dependency-acquisition", "materialized");
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const finalRoot = acquiredTreeDirectory(stateDirectory, inputSetId);
+  const staging = join(parent, `.staging-${inputSetId}-${process.pid}`);
+  await makeOwnerWritable(staging);
+  await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  await mkdir(staging, { recursive: true, mode: 0o700 });
+
+  const descriptor: AcquiredDependencyTreeDescriptor = {
+    schema_version: "review-lsp.acquired-dependency-tree.v1",
+    input_set_id: inputSetId,
+    dependency_root: join(finalRoot, "dependencies"),
+    tree_manifest_sha256: scan.tree_manifest_sha256,
+    file_count: scan.file_count,
+    symlink_count: scan.symlink_count,
+    total_bytes: scan.total_bytes,
+    materialization_method: "pnpm-install-clone-or-copy",
+    created_at: new Date().toISOString(),
+  };
+
+  await rename(projectRoot, join(staging, "dependencies"));
+  await writeFile(join(staging, "acquired-tree.json"), `${JSON.stringify(descriptor, null, 2)}\n`, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  await makeOwnerWritable(finalRoot);
+  await rm(finalRoot, { recursive: true, force: true }).catch(() => undefined);
+  await rename(staging, finalRoot);
+  return descriptor;
 }
 
 /**
@@ -237,6 +387,13 @@ export async function acquireDependencies(options: AcquisitionOptions): Promise<
   });
 
   try {
+    const existingTree = await loadAcquiredDependencyTree(options.stateDirectory, options.inputs.input_set_id);
+    if (existingTree) {
+      const report = base("SATISFIED", false);
+      report.store_identity = await storeIdentity(storeDirectory, options.inputs.input_set_id);
+      return report;
+    }
+
     await writeInstallProject(options.candidate, options.inputs, projectRoot);
 
     const environment = isolatedEnvironment(home, storeDirectory, corepackHome(options.stateDirectory), networkPolicy);
@@ -256,9 +413,55 @@ export async function acquireDependencies(options: AcquisitionOptions): Promise<
     const combined = `${result.stdout}\n${result.stderr}`;
 
     if (result.code === 0) {
-      const report = base("SATISFIED", networkPolicy === "EXPLICIT_ACQUISITION");
-      report.store_identity = await storeIdentity(storeDirectory, options.inputs.input_set_id);
-      return report;
+      // A store is only mutable acquisition cache, not the product that P2B admits. Materialize
+      // the complete dependency graph now, while this explicit operation may use network, and
+      // publish that graph as Review-LSP-owned acquisition state. P2B will copy/re-scan/seal
+      // these bytes without asking pnpm to reconstruct Git/tarball dependencies offline.
+      const installArgs = [
+        `pnpm@${options.inputs.package_manager_version}`,
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        `--store-dir=${storeDirectory}`,
+        "--package-import-method=clone-or-copy",
+        "--config.confirmModulesPurge=false",
+        ...(networkPolicy === "OFFLINE" ? ["--offline"] : ["--prefer-offline"]),
+      ];
+      const install = await run("corepack", installArgs, { cwd: projectRoot, env: environment, timeoutMs });
+      const installOutput = `${install.stdout}\n${install.stderr}`;
+
+      if (install.code === 0) {
+        await publishAcquiredDependencyTree(
+          options.stateDirectory,
+          options.inputs.input_set_id,
+          projectRoot,
+        );
+        const report = base("SATISFIED", networkPolicy === "EXPLICIT_ACQUISITION");
+        report.store_identity = await storeIdentity(storeDirectory, options.inputs.input_set_id);
+        return report;
+      }
+
+      if (isLockfileDrift(installOutput)) {
+        const report = base("UNSUPPORTED", false);
+        report.store_identity = await storeIdentity(storeDirectory, options.inputs.input_set_id);
+        report.limitation = "candidate lockfile does not match its manifests";
+        report.remediation = "the candidate itself is inconsistent; no acquisition policy can resolve this";
+        return report;
+      }
+
+      if (networkPolicy === "OFFLINE"
+        && (isPackageManagerUnavailableOffline(installOutput) || isOfflineShortfall(installOutput))) {
+        const report = base("ACQUISITION_REQUIRED", false);
+        report.store_identity = await storeIdentity(storeDirectory, options.inputs.input_set_id);
+        report.limitation = "required packages are absent from the Review-LSP acquisition store";
+        report.remediation = "re-run acquisition with the explicit network policy to materialize the exact locked dependency graph";
+        return report;
+      }
+
+      throw new ReviewLspError(
+        "DEPENDENCY_ACQUISITION_FAILED",
+        `pnpm install failed (exit ${install.signal ?? install.code}): ${installOutput.trim().slice(-2000)}`,
+      );
     }
 
     if (isLockfileDrift(combined)) {

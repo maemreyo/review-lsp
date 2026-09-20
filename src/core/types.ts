@@ -1,6 +1,6 @@
 export type BindingState = "VERIFIED" | "PARTIAL" | "UNKNOWN" | "INVALID";
 export type ExecutionStatus = "OK" | "ERROR" | "TIMEOUT" | "CANCELLED";
-export type IsolationKind = "TRUSTED_LOCAL" | "CONTAINER_READ_ONLY";
+export type IsolationKind = "TRUSTED_LOCAL" | "CONTAINER_READ_ONLY" | "MACOS_SANDBOX";
 
 export interface CandidateEntry {
   path: string;
@@ -36,6 +36,8 @@ export interface TypeScriptProfile {
   node_executable_sha256: string;
   server_entrypoint: string;
   server_entrypoint_sha256: string;
+  server_runtime_root: string;
+  server_runtime_kind: "BUNDLED" | "PACKAGE";
   server_package_version: string;
   server_package_sha256: string;
   typescript_root: string;
@@ -77,6 +79,8 @@ export interface EnvironmentManifest {
   projection: {
     projection_id: string;
     projection_implementation: string;
+    derived_artifact_ids: string[];
+    derived_artifact_tree_manifests: string[];
     entry_point_gate_state: "COMPLETE" | "INCOMPLETE";
     entry_point_targets_checked: number;
   } | null;
@@ -284,6 +288,40 @@ export interface ProjectionUriClassification {
  * The candidate remains the source authority: every source path in the projection must hash
  * back to its candidate entry, and the projection is what the language server is pointed at.
  */
+export interface DerivedWorkspaceArtifactDescriptor {
+  schema_version: "review-lsp.derived-workspace-artifact.v1";
+  artifact_id: string;
+  candidate_id: string;
+  source_manifest_sha256: string;
+  dependency_snapshot_id: string;
+  package_manifest_path: string;
+  package_name: string | null;
+  project_config_path: string;
+  project_config_sha256: string;
+  config_chain: Array<{ path: string; sha256: string }>;
+  compiler_artifact_id: string;
+  compiler_version: string;
+  compiler_entrypoint: string;
+  compiler_entrypoint_sha256: string;
+  node_executable: string;
+  node_executable_sha256: string;
+  fixed_compiler_argv: string[];
+  mount_relative_path: string;
+  execution_profile_kind: IsolationKind;
+  execution_profile_identity: string;
+  compiler_exit_code: number;
+  diagnostic_error_count: number | null;
+  stdout_sha256: string;
+  stderr_sha256: string;
+  output_tree_manifest_sha256: string;
+  output_root: string;
+  output_file_count: number;
+  output_total_bytes: number;
+  strong_admission: boolean;
+  limitation: string | null;
+  created_at: string;
+}
+
 export interface ProjectionDescriptor {
   schema_version: "review-lsp.projection.v1";
   projection_id: string;
@@ -292,9 +330,13 @@ export interface ProjectionDescriptor {
   source_manifest_sha256: string;
   dependency_snapshot_id: string | null;
   dependency_tree_manifest_sha256: string | null;
+  derived_artifact_ids: string[];
+  derived_artifact_tree_manifests: string[];
   isolation: IsolationKind;
   execution_root: string;
   dependency_mounts: string[];
+  derived_artifact_mounts: string[];
+  derived_artifact_roots: string[];
   entry_point_gate: EntryPointGateResult;
   created_at: string;
 }

@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { ReviewLspError } from "./errors.js";
@@ -43,14 +44,29 @@ export async function createTypeScriptProfile(): Promise<TypeScriptProfile> {
   const nodeExecutableSha256 = sha256(await readFile(nodeExecutable));
 
   const serverPackageJson = require.resolve("typescript-language-server/package.json");
-  const serverRoot = await realpath(dirname(serverPackageJson));
+  const packageServerRoot = await realpath(dirname(serverPackageJson));
   const serverPackage = JSON.parse(await readFile(serverPackageJson, "utf8")) as { version?: unknown };
   if (typeof serverPackage.version !== "string") {
     throw new ReviewLspError("PROFILE_INVALID", "typescript-language-server package version is missing");
   }
-  const serverEntrypoint = join(serverRoot, "lib", "cli.mjs");
+
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const bundledCandidates = [
+    join(moduleDirectory, "typescript-language-server", "lib", "cli.mjs"),
+    join(moduleDirectory, "..", "..", "typescript-language-server", "lib", "cli.mjs"),
+  ];
+  let bundledServer: string | null = null;
+  for (const candidate of bundledCandidates) {
+    if (await stat(candidate).then(() => true).catch(() => false)) {
+      bundledServer = await realpath(candidate);
+      break;
+    }
+  }
+  const serverEntrypoint = bundledServer ?? join(packageServerRoot, "lib", "cli.mjs");
+  const serverRuntimeRoot = bundledServer ? dirname(dirname(bundledServer)) : packageServerRoot;
+  const serverRuntimeKind = bundledServer ? "BUNDLED" as const : "PACKAGE" as const;
   const serverEntrypointSha256 = sha256(await readFile(serverEntrypoint));
-  const serverPackageSha256 = await digestTree(serverRoot);
+  const serverPackageSha256 = await digestTree(serverRuntimeRoot);
 
   const typescriptPackageJson = require.resolve("typescript/package.json");
   const typescriptRoot = await realpath(dirname(typescriptPackageJson));
@@ -77,6 +93,8 @@ export async function createTypeScriptProfile(): Promise<TypeScriptProfile> {
     node_executable_sha256: nodeExecutableSha256,
     server_entrypoint: serverEntrypoint,
     server_entrypoint_sha256: serverEntrypointSha256,
+    server_runtime_root: serverRuntimeRoot,
+    server_runtime_kind: serverRuntimeKind,
     server_package_version: serverPackage.version,
     server_package_sha256: serverPackageSha256,
     typescript_root: typescriptRoot,
@@ -122,10 +140,11 @@ export async function verifyTypeScriptProfile(profile: TypeScriptProfile): Promi
   if (observedServer !== profile.server_entrypoint_sha256) {
     throw new ReviewLspError("PROFILE_INVALID", "TypeScript language server entrypoint digest changed after profile admission");
   }
-  const serverRoot = await realpath(dirname(dirname(profile.server_entrypoint)));
+  const serverRuntimeRoot = await realpath(profile.server_runtime_root);
   const typescriptRoot = await realpath(profile.typescript_root);
-  if (await digestTree(serverRoot) !== profile.server_package_sha256) {
-    throw new ReviewLspError("PROFILE_INVALID", "TypeScript language server package bytes changed after profile admission");
+  const observedServerRuntimeSha256 = await digestTree(serverRuntimeRoot);
+  if (observedServerRuntimeSha256 !== profile.server_package_sha256) {
+    throw new ReviewLspError("PROFILE_INVALID", "TypeScript language server runtime bytes changed after profile admission");
   }
   if (await digestTree(typescriptRoot) !== profile.typescript_package_sha256) {
     throw new ReviewLspError("PROFILE_INVALID", "TypeScript package bytes changed after profile admission");

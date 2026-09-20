@@ -69,11 +69,15 @@ try {
   if (artifactInfo.package_version !== "0.1.0-alpha.1") {
     throw new Error(`unexpected installed package version: ${artifactInfo.package_version}`);
   }
-  if (artifactInfo.identity_scope !== "provider_bundle_and_package_json") {
+  if (artifactInfo.identity_scope !== "provider_bundle_server_bundle_and_package_json") {
     throw new Error(`unexpected artifact identity scope: ${artifactInfo.identity_scope}`);
   }
   const bundleEntry = artifactInfo.files?.find((entry) => entry.path === "dist/review-lsp.mjs");
   if (!bundleEntry?.sha256) throw new Error("artifact-info omitted provider bundle digest");
+  const serverBundleEntry = artifactInfo.files?.find(
+    (entry) => entry.path === "dist/typescript-language-server/lib/cli.mjs",
+  );
+  if (!serverBundleEntry?.sha256) throw new Error("artifact-info omitted TypeScript server bundle digest");
 
   await mkdir(join(fixture, "src"), { recursive: true });
   await run("git", ["init", "-q", "-b", "main", fixture]);
@@ -147,6 +151,7 @@ try {
     provider_artifact_id: artifactInfo.artifact_id,
     provider_artifact_sha256: artifactInfo.artifact_sha256,
     provider_bundle_sha256: bundleEntry.sha256,
+    typescript_server_bundle_sha256: serverBundleEntry.sha256,
     candidate_a: a,
     live_b: b,
     source_binding: query.receipt.source_binding,

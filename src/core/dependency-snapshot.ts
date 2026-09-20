@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { readCandidateFile } from "./candidate.js";
 import { canonicalJson, contentId } from "./canonical.js";
-import { acquisitionStoreDirectory } from "./dependency-acquisition.js";
+import { acquisitionStoreDirectory, loadAcquiredDependencyTree, readAcquiredDependencyTreeDescriptor } from "./dependency-acquisition.js";
 import { scanDependencyTree } from "./dependency-tree.js";
 import { ReviewLspError } from "./errors.js";
 import type {
@@ -223,6 +223,23 @@ export interface PublishOptions {
   timeoutMs?: number;
 }
 
+function snapshotIdentityMaterial(inputs: DependencyInputSet, treeManifestSha256: string) {
+  return {
+    schema_version: "review-lsp.dependency-snapshot.v1" as const,
+    ecosystem: "node" as const,
+    package_manager: "pnpm" as const,
+    package_manager_version: inputs.package_manager_version,
+    platform: inputs.platform,
+    arch: inputs.arch,
+    input_set_id: inputs.input_set_id,
+    network_policy: "OFFLINE" as const,
+    script_policy: "IGNORE_SCRIPTS" as const,
+    lockfile_policy: "FROZEN" as const,
+    dependency_graph: "INCLUDES_DEV" as const,
+    tree_manifest_sha256: treeManifestSha256,
+  };
+}
+
 export async function publishDependencySnapshot(options: PublishOptions): Promise<DependencySnapshotDescriptor> {
   const { candidate, inputs, stateDirectory } = options;
   const storeDirectory = acquisitionStoreDirectory(stateDirectory);
@@ -251,31 +268,72 @@ export async function publishDependencySnapshot(options: PublishOptions): Promis
   await writeFile(join(home, ".npmrc-global"), "", { mode: 0o600 });
 
   try {
+    // Re-read every candidate dependency-defining input before publication. The acquisition
+    // tree is mutable cache and never substitutes for candidate authority.
     await writeProjectInputs(candidate, inputs, projectRoot);
 
-    // `clone-or-copy` never hardlinks. A hardlinked snapshot would alias the acquisition
-    // store, so a later write through that alias would change admitted bytes.
-    const materializationMethod = "clone-or-copy";
-    const result = await run([
-      `pnpm@${inputs.package_manager_version}`,
-      "install",
-      "--frozen-lockfile",
-      "--ignore-scripts",
-      "--offline",
-      `--store-dir=${storeDirectory}`,
-      `--package-import-method=${materializationMethod}`,
-      "--config.confirmModulesPurge=false",
-    ], { cwd: projectRoot, env: isolatedEnvironment(home, storeDirectory, corepackDirectory), timeoutMs: options.timeoutMs ?? PUBLISH_TIMEOUT_MS });
-
-    if (result.code !== 0) {
-      throw new ReviewLspError(
-        "DEPENDENCY_ACQUISITION_REQUIRED",
-        `offline snapshot publication failed; run acquisition first: ${result.output.trim().slice(-1500)}`,
-      );
+    // A materialized-acquisition descriptor may be used only as a cache-address hint.
+    // If a sealed content-addressed snapshot for that exact tree already exists, verify the
+    // snapshot itself and return it before copying hundreds of MB again. The mutable acquisition
+    // bytes are not trusted by this fast path.
+    const acquiredHint = await readAcquiredDependencyTreeDescriptor(stateDirectory, inputs.input_set_id);
+    if (acquiredHint) {
+      const hintedIdentity = snapshotIdentityMaterial(inputs, acquiredHint.tree_manifest_sha256);
+      const hintedSnapshotId = contentId("depsnap", hintedIdentity);
+      try {
+        const existing = JSON.parse(
+          await readFile(dependencySnapshotDescriptorPath(stateDirectory, hintedSnapshotId), "utf8"),
+        ) as DependencySnapshotDescriptor;
+        if (existing.input_set_id !== inputs.input_set_id) {
+          throw new ReviewLspError("DEPENDENCY_SNAPSHOT_INVALID", "cached snapshot input-set binding does not match current candidate inputs");
+        }
+        await verifyDependencySnapshot(existing);
+        return existing;
+      } catch (error) {
+        if (error instanceof ReviewLspError) throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
 
-    await removeNonDependencyState(projectRoot);
-    await pruneToDependencyMaterial(projectRoot);
+    // Prefer an explicitly materialized acquisition graph. This handles resolver shapes such
+    // as Git/codeload tarballs that pnpm can materialize during authorized acquisition but
+    // cannot necessarily reconstruct later with --offline. P2B still copies, rescans and seals
+    // the graph; acquisition bytes themselves are never admitted.
+    const acquired = await loadAcquiredDependencyTree(stateDirectory, inputs.input_set_id);
+    const materializationMethod = acquired
+      ? "acquired-tree-copy"
+      : "clone-or-copy";
+
+    if (acquired) {
+      await rm(projectRoot, { recursive: true, force: true });
+      await cp(acquired.dependency_root, projectRoot, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        verbatimSymlinks: true,
+      });
+    } else {
+      const result = await run([
+        `pnpm@${inputs.package_manager_version}`,
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--offline",
+        `--store-dir=${storeDirectory}`,
+        "--package-import-method=clone-or-copy",
+        "--config.confirmModulesPurge=false",
+      ], { cwd: projectRoot, env: isolatedEnvironment(home, storeDirectory, corepackDirectory), timeoutMs: options.timeoutMs ?? PUBLISH_TIMEOUT_MS });
+
+      if (result.code !== 0) {
+        throw new ReviewLspError(
+          "DEPENDENCY_ACQUISITION_REQUIRED",
+          `offline snapshot publication failed; run acquisition first: ${result.output.trim().slice(-1500)}`,
+        );
+      }
+
+      await removeNonDependencyState(projectRoot);
+      await pruneToDependencyMaterial(projectRoot);
+    }
 
     const scan = await scanDependencyTree(projectRoot);
     if (scan.multiply_linked.length > 0) {
@@ -285,20 +343,7 @@ export async function publishDependencySnapshot(options: PublishOptions): Promis
       );
     }
 
-    const identityMaterial = {
-      schema_version: "review-lsp.dependency-snapshot.v1" as const,
-      ecosystem: "node" as const,
-      package_manager: "pnpm" as const,
-      package_manager_version: inputs.package_manager_version,
-      platform: inputs.platform,
-      arch: inputs.arch,
-      input_set_id: inputs.input_set_id,
-      network_policy: "OFFLINE" as const,
-      script_policy: "IGNORE_SCRIPTS" as const,
-      lockfile_policy: "FROZEN" as const,
-      dependency_graph: "INCLUDES_DEV" as const,
-      tree_manifest_sha256: scan.tree_manifest_sha256,
-    };
+    const identityMaterial = snapshotIdentityMaterial(inputs, scan.tree_manifest_sha256);
     const snapshotId = contentId("depsnap", identityMaterial);
     const snapshotDirectory = dependencySnapshotDirectory(stateDirectory, snapshotId);
 

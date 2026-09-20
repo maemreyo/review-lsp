@@ -23,6 +23,8 @@ function profile(entrypoint: string): TypeScriptProfile {
     node_executable_sha256: "0".repeat(64),
     server_entrypoint: entrypoint,
     server_entrypoint_sha256: "1".repeat(64),
+    server_runtime_root: resolve("."),
+    server_runtime_kind: "PACKAGE",
     server_package_version: "fake",
     server_package_sha256: "2".repeat(64),
     typescript_root: process.cwd(),

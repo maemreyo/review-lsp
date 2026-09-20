@@ -14,6 +14,10 @@ import {
 } from "./core/candidate.js";
 import { acquireDependencies } from "./core/dependency-acquisition.js";
 import { deriveDependencyInputs } from "./core/dependency-inputs.js";
+import { publishDependencySnapshot } from "./core/dependency-snapshot.js";
+import { deriveWorkspaceArtifact, planWorkspaceDerivations } from "./core/derived-artifact.js";
+import { buildProjection } from "./core/projection.js";
+import { resolveProjectForDocument } from "./core/toolchain.js";
 import { ReviewLspError } from "./core/errors.js";
 import { createTypeScriptProfile } from "./core/profile.js";
 import { receiptPath, validateReceiptFile } from "./core/receipts.js";
@@ -248,7 +252,78 @@ async function main(): Promise<void> {
     const inferredState = resolve(candidate.source_root, "..", "..", "..");
     const queryState = stateOverride ? stateDirectory : inferredState;
     const profile = await createTypeScriptProfile();
-    const session = await SemanticSession.create({ candidate, profile, stateDirectory: queryState });
+    let snapshot = null;
+    let projection = null;
+    if (candidate.entries.some((entry) => entry.path === "pnpm-lock.yaml" && entry.kind === "file")) {
+      const inputs = await deriveDependencyInputs(candidate);
+      const acquisition = await acquireDependencies({
+        candidate,
+        inputs,
+        stateDirectory: queryState,
+        networkPolicy: "OFFLINE",
+      });
+      if (acquisition.state === "SATISFIED") {
+        snapshot = await publishDependencySnapshot({
+          candidate,
+          inputs,
+          stateDirectory: queryState,
+        });
+        projection = await buildProjection({
+          candidate,
+          snapshot,
+          stateDirectory: queryState,
+          workspaceManifests: inputs.workspace_manifests,
+        });
+
+        if (projection.entry_point_gate.state === "INCOMPLETE") {
+          let order: string[] = [];
+          try {
+            order = await planWorkspaceDerivations({
+              candidate,
+              workspaceManifests: inputs.workspace_manifests,
+              gate: projection.entry_point_gate,
+            });
+          } catch (error) {
+            if (!(error instanceof ReviewLspError) || error.code !== "DERIVED_ARTIFACT_UNSUPPORTED") throw error;
+          }
+
+          const admittedArtifacts = [];
+          for (const manifestPath of order) {
+            try {
+              const artifact = await deriveWorkspaceArtifact({
+                candidate,
+                snapshot,
+                projection,
+                manifestPath,
+                stateDirectory: queryState,
+              });
+              if (!artifact.strong_admission) continue;
+              admittedArtifacts.push(artifact);
+              projection = await buildProjection({
+                candidate,
+                snapshot,
+                stateDirectory: queryState,
+                derivedArtifacts: admittedArtifacts,
+                workspaceManifests: inputs.workspace_manifests,
+              });
+            } catch (error) {
+              if (!(error instanceof ReviewLspError)) throw error;
+              if (error.code === "DERIVED_ARTIFACT_UNSUPPORTED" || error.code === "DERIVED_ARTIFACT_FAILED") continue;
+              throw error;
+            }
+          }
+        }
+      }
+    }
+    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const session = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: queryState,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
     try {
       const receipt = operation === "hover"
         ? await session.hover({ path, line, character })

@@ -6,6 +6,8 @@ import { ReviewLspError } from "./errors.js";
 
 export const ARTIFACT_MANIFEST_SCHEMA = "review-lsp.artifact-manifest.v1" as const;
 export const PROVIDER_ENTRYPOINT = "dist/review-lsp.mjs" as const;
+export const TYPESCRIPT_SERVER_BUNDLE = "dist/typescript-language-server/lib/cli.mjs" as const;
+export const TYPESCRIPT_SERVER_PACKAGE_JSON = "dist/typescript-language-server/package.json" as const;
 
 export interface ArtifactManifestEntry {
   path: string;
@@ -17,7 +19,7 @@ export interface ArtifactManifest {
   schema_version: typeof ARTIFACT_MANIFEST_SCHEMA;
   package_name: string;
   package_version: string;
-  identity_scope: "provider_bundle_and_package_json";
+  identity_scope: "provider_bundle_server_bundle_and_package_json";
   provider_entrypoint: typeof PROVIDER_ENTRYPOINT;
   semantic_toolchain: [
     { name: "typescript-language-server"; version: string },
@@ -86,12 +88,14 @@ export async function buildArtifactManifest(packageRootInput: string): Promise<A
   const files = await Promise.all([
     entryFor(packageRoot, "package.json"),
     entryFor(packageRoot, PROVIDER_ENTRYPOINT),
+    entryFor(packageRoot, TYPESCRIPT_SERVER_BUNDLE),
+    entryFor(packageRoot, TYPESCRIPT_SERVER_PACKAGE_JSON),
   ]);
   const stable = {
     schema_version: ARTIFACT_MANIFEST_SCHEMA,
     package_name: metadata.name,
     package_version: metadata.version,
-    identity_scope: "provider_bundle_and_package_json" as const,
+    identity_scope: "provider_bundle_server_bundle_and_package_json" as const,
     provider_entrypoint: PROVIDER_ENTRYPOINT,
     semantic_toolchain: [
       { name: "typescript-language-server" as const, version: tsls },

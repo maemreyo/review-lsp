@@ -33,6 +33,7 @@
   "files": [
     "dist/src",
     "dist/review-lsp.mjs",
+    "dist/typescript-language-server",
     "dist/review-lsp-artifact.json",
     "dist/review-lsp-licenses.json",
     "README.md",
@@ -48,7 +49,7 @@
   "packageManager": "pnpm@10.20.0",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm clean && tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"import { createRequire as __reviewLspCreateRequire } from 'node:module'; const require = __reviewLspCreateRequire(import.meta.url);\" --outfile=dist/review-lsp.mjs && node dist/scripts/build-artifact-manifest.js && node scripts/license-report.mjs",
+    "build": "pnpm clean && tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"import { createRequire as __reviewLspCreateRequire } from 'node:module'; const require = __reviewLspCreateRequire(import.meta.url);\" --outfile=dist/review-lsp.mjs && esbuild node_modules/typescript-language-server/lib/cli.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/typescript-language-server/lib/cli.mjs && node scripts/copy-typescript-server-package.mjs && node dist/scripts/build-artifact-manifest.js && node scripts/license-report.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",

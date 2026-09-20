@@ -12,6 +12,7 @@ export {
 export { scanDependencyTree } from "./core/dependency-tree.js";
 export { assertCoordinateExpectation, buildCoordinateContext } from "./core/coordinate.js";
 export { runEntryPointGate } from "./core/entry-points.js";
+export { deriveWorkspaceArtifact, planWorkspaceDerivations, verifyDerivedWorkspaceArtifact } from "./core/derived-artifact.js";
 export { runtimeKeyFor, runtimeKeyId, SemanticRuntimeManager } from "./core/runtime.js";
 export {
   admitEngineArtifact,
@@ -45,6 +46,7 @@ export type {
   BindingState,
   CandidateDescriptor,
   CandidateEntry,
+  DerivedWorkspaceArtifactDescriptor,
   EnvironmentManifest,
   ExecutionStatus,
   IsolationKind,

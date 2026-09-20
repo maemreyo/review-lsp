@@ -152,6 +152,7 @@ export class SemanticRuntimeManager {
           stateDirectory: request.stateDirectory,
           ...(request.projection ? { projection: request.projection } : {}),
           ...(request.snapshot ? { snapshot: request.snapshot } : {}),
+          ...(request.resolvingProject ? { resolvingProject: request.resolvingProject } : {}),
           ...(request.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: request.requestTimeoutMs }),
         }),
         leases: 0,

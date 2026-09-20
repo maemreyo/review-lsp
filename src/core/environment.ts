@@ -128,6 +128,8 @@ export async function buildEnvironmentManifest(
       ? {
           projection_id: projection.projection_id,
           projection_implementation: projection.projection_implementation,
+          derived_artifact_ids: projection.derived_artifact_ids ?? [],
+          derived_artifact_tree_manifests: projection.derived_artifact_tree_manifests ?? [],
           entry_point_gate_state: projection.entry_point_gate.state,
           entry_point_targets_checked: projection.entry_point_gate.targets_checked,
         }

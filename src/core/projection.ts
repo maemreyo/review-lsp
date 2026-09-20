@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { contentId, sha256 } from "./canonical.js";
 import { runEntryPointGate } from "./entry-points.js";
+import { verifyDerivedWorkspaceArtifact } from "./derived-artifact.js";
 import { ReviewLspError } from "./errors.js";
 import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
+  DerivedWorkspaceArtifactDescriptor,
   ProjectionDescriptor,
   ProjectionUriClass,
   ProjectionUriClassification,
@@ -27,7 +29,7 @@ import type {
  * document answered here is a document from the candidate.
  */
 
-const PROJECTION_IMPLEMENTATION = "review-lsp.projection.v1+copy-source+link-dependencies";
+const PROJECTION_IMPLEMENTATION = "review-lsp.projection.v1+copy-source+dependency-facade-relative-workspace-links+derived-artifacts";
 
 export function projectionDirectory(stateDirectory: string, projectionId: string): string {
   return join(stateDirectory, "projections", projectionId);
@@ -78,18 +80,92 @@ async function writeCandidateSource(candidate: CandidateDescriptor, executionRoo
 async function linkDependencies(
   snapshot: DependencySnapshotDescriptor,
   executionRoot: string,
+  workspaceManifests: string[],
 ): Promise<string[]> {
   const mounts: string[] = [];
+  const snapshotRoot = await realpath(snapshot.dependency_root);
+  const workspaceTargets = new Map<string, string>();
+
+  for (const manifestPath of workspaceManifests) {
+    const workspaceRelative = dirname(manifestPath) === "." ? "" : dirname(manifestPath);
+    workspaceTargets.set(
+      workspaceRelative.split(sep).join("/"),
+      workspaceRelative,
+    );
+  }
+
+  async function linkPackageEntry(source: string, destination: string): Promise<void> {
+    const info = await lstat(source);
+    if (info.isSymbolicLink()) {
+      const target = await readlink(source);
+      const lexicalTarget = isAbsolute(target)
+        ? resolvePath(target)
+        : resolvePath(dirname(source), target);
+      // Workspace links may point at pruned stubs, so match those lexically against
+      // the descriptor path before requiring a resolvable target. Do not mix this with the
+      // canonical containment check below: macOS aliases /tmp as /private/tmp.
+      const lexicalSnapshotRelative = within(snapshot.dependency_root, lexicalTarget);
+      const normalizedWorkspacePath = lexicalSnapshotRelative?.split(sep).join("/");
+      const workspaceTarget = normalizedWorkspacePath === undefined
+        ? undefined
+        : workspaceTargets.get(normalizedWorkspacePath);
+      if (workspaceTarget !== undefined) {
+        // Keep workspace links internal to the projection and relative so atomic rename of the
+        // staging projection cannot strand them on the old .staging-* absolute path.
+        const projectionPackage = workspaceTarget
+          ? join(executionRoot, workspaceTarget)
+          : executionRoot;
+        const relativeTarget = relative(dirname(destination), projectionPackage) || ".";
+        await symlink(relativeTarget, destination);
+        return;
+      }
+
+      // External package links must resolve now and their canonical target must remain in the
+      // sealed snapshot. This catches true escapes while accepting /tmp -> /private/tmp aliases.
+      const resolved = await realpath(source).catch(() => null);
+      if (!resolved || within(snapshotRoot, resolved) === undefined) {
+        throw new ReviewLspError(
+          "PROJECTION_INVALID",
+          `dependency symlink ${source} escapes admitted snapshot and is not an admitted workspace link`,
+        );
+      }
+      await symlink(source, destination);
+      return;
+    }
+    // pnpm uses scope directories containing package symlinks. Recreate only that shallow
+    // namespace so workspace links can be rebound individually; opaque package/store
+    // directories remain sealed snapshot-backed.
+    if (info.isDirectory() && !info.isSymbolicLink() && source.split(sep).at(-1)?.startsWith("@")) {
+      await mkdir(destination, { recursive: true });
+      for (const child of (await readdir(source)).sort()) {
+        await linkPackageEntry(join(source, child), join(destination, child));
+      }
+      return;
+    }
+    await symlink(source, destination);
+  }
+
+  async function materializeNodeModulesFacade(sourceNodeModules: string, destination: string): Promise<void> {
+    await mkdir(destination, { recursive: true });
+    for (const name of (await readdir(sourceNodeModules)).sort()) {
+      await linkPackageEntry(join(sourceNodeModules, name), join(destination, name));
+    }
+  }
 
   async function visit(relativePath: string): Promise<void> {
     const absolute = relativePath ? join(snapshot.dependency_root, relativePath) : snapshot.dependency_root;
     for (const name of await readdir(absolute)) {
       const childRelative = relativePath ? join(relativePath, name) : name;
       if (name === "node_modules") {
+        const sourceNodeModules = join(snapshot.dependency_root, childRelative);
+        const sourceReal = await realpath(sourceNodeModules);
+        if (within(snapshotRoot, sourceReal) === undefined) {
+          throw new ReviewLspError("PROJECTION_INVALID", `dependency mount escapes admitted snapshot: ${childRelative}`);
+        }
         const destination = join(executionRoot, childRelative);
         await mkdir(dirname(destination), { recursive: true });
         await rm(destination, { recursive: true, force: true }).catch(() => undefined);
-        await symlink(join(snapshot.dependency_root, childRelative), destination);
+        await materializeNodeModulesFacade(sourceNodeModules, destination);
         mounts.push(childRelative);
         continue;
       }
@@ -99,7 +175,48 @@ async function linkDependencies(
   }
 
   await visit("");
-  return mounts;
+  return mounts.sort();
+}
+
+async function linkDerivedArtifacts(
+  candidate: CandidateDescriptor,
+  snapshot: DependencySnapshotDescriptor | null,
+  artifacts: DerivedWorkspaceArtifactDescriptor[],
+  executionRoot: string,
+): Promise<string[]> {
+  if (artifacts.length === 0) return [];
+  if (!snapshot) {
+    throw new ReviewLspError("PROJECTION_INVALID", "derived workspace artifacts require an admitted dependency snapshot");
+  }
+  const mounts: string[] = [];
+  for (const artifact of artifacts) {
+    await verifyDerivedWorkspaceArtifact(artifact, { candidate, snapshot });
+    if (!artifact.strong_admission) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `derived artifact ${artifact.artifact_id} is advisory only and cannot satisfy the strong projection gate`,
+      );
+    }
+    const packageRoot = dirname(artifact.package_manifest_path) === "." ? "" : dirname(artifact.package_manifest_path);
+    const relativeMount = packageRoot
+      ? join(packageRoot, artifact.mount_relative_path)
+      : artifact.mount_relative_path;
+    const destination = join(executionRoot, relativeMount);
+    if (within(executionRoot, destination) === undefined) {
+      throw new ReviewLspError("PROJECTION_INVALID", `derived artifact mount escapes projection: ${relativeMount}`);
+    }
+    const existing = await lstat(destination).catch(() => null);
+    if (existing) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `derived artifact ${artifact.artifact_id} would overwrite candidate/projection path ${relativeMount}`,
+      );
+    }
+    await mkdir(dirname(destination), { recursive: true });
+    await symlink(artifact.output_root, destination);
+    mounts.push(relativeMount);
+  }
+  return mounts.sort();
 }
 
 async function sealProjection(root: string): Promise<void> {
@@ -133,12 +250,16 @@ export interface BuildProjectionOptions {
   candidate: CandidateDescriptor;
   snapshot: DependencySnapshotDescriptor | null;
   stateDirectory: string;
+  /** Strongly admitted derived workspace artifacts to expose at their declared output mounts. */
+  derivedArtifacts?: DerivedWorkspaceArtifactDescriptor[];
   /** Workspace manifest paths the entry-point gate must check, relative to the root. */
   workspaceManifests?: string[];
 }
 
 export async function buildProjection(options: BuildProjectionOptions): Promise<ProjectionDescriptor> {
   const { candidate, snapshot, stateDirectory } = options;
+  const derivedArtifacts = [...(options.derivedArtifacts ?? [])]
+    .sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
 
   const projectionId = contentId("proj", {
     schema_version: "review-lsp.projection.v1" as const,
@@ -147,6 +268,12 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
     source_manifest_sha256: candidate.source_manifest_sha256,
     dependency_snapshot_id: snapshot?.snapshot_id ?? null,
     dependency_tree_manifest_sha256: snapshot?.tree_manifest_sha256 ?? null,
+    derived_artifacts: derivedArtifacts.map((artifact) => ({
+      artifact_id: artifact.artifact_id,
+      output_tree_manifest_sha256: artifact.output_tree_manifest_sha256,
+      package_manifest_path: artifact.package_manifest_path,
+      mount_relative_path: artifact.mount_relative_path,
+    })),
     isolation: candidate.isolation,
   });
 
@@ -167,9 +294,12 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
 
   try {
     await writeCandidateSource(candidate, stagingExecution);
-    const mounts = snapshot ? await linkDependencies(snapshot, stagingExecution) : [];
-
     const workspaceManifests = options.workspaceManifests ?? [];
+    const mounts = snapshot
+      ? await linkDependencies(snapshot, stagingExecution, workspaceManifests)
+      : [];
+    const derivedMounts = await linkDerivedArtifacts(candidate, snapshot, derivedArtifacts, stagingExecution);
+
     const gate = await runEntryPointGate({
       projectionRoot: stagingExecution,
       workspaceManifests,
@@ -184,9 +314,13 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
       source_manifest_sha256: candidate.source_manifest_sha256,
       dependency_snapshot_id: snapshot?.snapshot_id ?? null,
       dependency_tree_manifest_sha256: snapshot?.tree_manifest_sha256 ?? null,
+      derived_artifact_ids: derivedArtifacts.map((artifact) => artifact.artifact_id),
+      derived_artifact_tree_manifests: derivedArtifacts.map((artifact) => artifact.output_tree_manifest_sha256),
       isolation: candidate.isolation,
       execution_root: executionRoot,
       dependency_mounts: mounts,
+      derived_artifact_mounts: derivedMounts,
+      derived_artifact_roots: derivedArtifacts.map((artifact) => artifact.output_root),
       entry_point_gate: gate,
       created_at: new Date().toISOString(),
     };
