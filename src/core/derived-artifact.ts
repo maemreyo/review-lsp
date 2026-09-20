@@ -586,6 +586,7 @@ export async function deriveWorkspaceArtifact(input: {
       input.snapshot.dependency_root,
       ...input.projection.derived_artifact_roots,
       engine.engine_root,
+      ...(engine.native_runtime ? [engine.native_runtime.root] : []),
       dirname(nodeExecutable),
     ];
     const writableRoots = [outputRoot, home, tmp];

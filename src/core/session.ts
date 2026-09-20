@@ -267,6 +267,7 @@ export class SemanticSession {
       ? [
           semanticRoot,
           candidateEngine.engine_root,
+          ...(candidateEngine.native_runtime ? [candidateEngine.native_runtime.root] : []),
           input.profile.typescript_root,
           serverRoot,
           dirname(input.profile.node_executable),
@@ -444,6 +445,7 @@ export class SemanticSession {
             version: this.candidateEngine.version,
             engine_kind: this.candidateEngine.engine_kind,
             tree_manifest_sha256: this.candidateEngine.tree_manifest_sha256,
+            native_runtime_tree_manifest_sha256: this.candidateEngine.native_runtime?.tree_manifest_sha256 ?? null,
           }
         : null,
       execution_profile: {

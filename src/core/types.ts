@@ -391,6 +391,7 @@ export interface SemanticToolchainEvidence {
     version: string;
     engine_kind: "TSSERVER_LEGACY" | "NATIVE_LSP";
     tree_manifest_sha256: string;
+    native_runtime_tree_manifest_sha256: string | null;
   } | null;
   execution_profile: {
     kind: IsolationKind;
@@ -422,6 +423,20 @@ export interface AdmittedEngineArtifact {
   entrypoint: string;
   entrypoint_sha256: string;
   file_count: number;
+  /**
+   * TypeScript 7's JS launcher resolves and execs a platform package. These bytes are part of
+   * the engine that actually answers, so they must be admitted separately from the launcher
+   * package tree. Legacy tsserver engines use null here.
+   */
+  native_runtime: {
+    package_name: string;
+    version: string;
+    root: string;
+    tree_manifest_sha256: string;
+    entrypoint: string;
+    entrypoint_sha256: string;
+    file_count: number;
+  } | null;
   policy: {
     plugins: "DISABLED";
     automatic_type_acquisition: "DISABLED";

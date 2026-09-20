@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { constants as fsConstants } from "node:fs";
@@ -16,6 +17,28 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+interface NativeRuntimeAdmission {
+  package_name: string;
+  version: string;
+  root: string;
+  tree_manifest_sha256: string;
+  entrypoint: string;
+  entrypoint_sha256: string;
+  file_count: number;
+}
+
+function stableNativeRuntime(runtime: NativeRuntimeAdmission | null): unknown {
+  return runtime
+    ? {
+        package_name: runtime.package_name,
+        version: runtime.version,
+        tree_manifest_sha256: runtime.tree_manifest_sha256,
+        entrypoint_sha256: runtime.entrypoint_sha256,
+        file_count: runtime.file_count,
+      }
+    : null;
+}
 
 interface AdmittedEngineLease {
   artifact: AdmittedEngineArtifact;
@@ -86,11 +109,64 @@ async function detectEngineShape(engineRoot: string): Promise<{
   return null;
 }
 
+async function admitNativeRuntime(input: {
+  engineRoot: string;
+  engineVersion: string;
+  snapshotRoot: string;
+}): Promise<NativeRuntimeAdmission> {
+  const packageName = `@typescript/typescript-${process.platform}-${process.arch}`;
+  const requireFromEngine = createRequire(join(input.engineRoot, "package.json"));
+  let manifestPath: string;
+  try {
+    manifestPath = requireFromEngine.resolve(`${packageName}/package.json`);
+  } catch {
+    throw new ReviewLspError(
+      "PROFILE_INVALID",
+      `candidate TypeScript ${input.engineVersion} requires ${packageName}, but that native runtime is absent`,
+    );
+  }
+  const root = await realpath(dirname(manifestPath));
+  const snapshotRoot = await realpath(input.snapshotRoot);
+  const delta = relative(snapshotRoot, root);
+  if (delta === ".." || delta.startsWith(`..${sep}`) || isAbsolute(delta)) {
+    throw new ReviewLspError(
+      "DEPENDENCY_SNAPSHOT_ESCAPED",
+      `candidate native TypeScript runtime ${packageName} resolves outside the admitted dependency snapshot`,
+    );
+  }
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { version?: unknown };
+  if (manifest.version !== input.engineVersion) {
+    throw new ReviewLspError(
+      "PROFILE_INVALID",
+      `candidate TypeScript ${input.engineVersion} resolved native runtime ${packageName}@${String(manifest.version)}`,
+    );
+  }
+  const entrypoint = join(root, "lib", process.platform === "win32" ? "tsc.exe" : "tsc");
+  const entrypointBytes = await readFile(entrypoint).catch(() => null);
+  if (!entrypointBytes) {
+    throw new ReviewLspError(
+      "PROFILE_INVALID",
+      `candidate native TypeScript runtime ${packageName} lacks executable ${entrypoint}`,
+    );
+  }
+  const tree = await scanDependencyTree(root);
+  return {
+    package_name: packageName,
+    version: input.engineVersion,
+    root,
+    tree_manifest_sha256: tree.tree_manifest_sha256,
+    entrypoint,
+    entrypoint_sha256: sha256(entrypointBytes),
+    file_count: tree.file_count,
+  };
+}
+
 /**
  * Binds the exact engine the candidate's admitted dependency state selects.
  *
- * Identity covers the whole engine tree, not just a version string, because the version alone
- * does not say which bytes would run.
+ * Identity covers every package whose bytes execute. For TypeScript <=6 that is the tsserver
+ * package tree. TypeScript 7's JS launcher execs a platform-specific native package, so both
+ * the launcher tree and native runtime tree are bound.
  */
 export async function admitEngineArtifact(input: {
   snapshot: DependencySnapshotDescriptor;
@@ -140,12 +216,20 @@ export async function admitEngineArtifact(input: {
     }
 
     const tree = await scanDependencyTree(engineRoot);
+    const nativeRuntime = shape.kind === "NATIVE_LSP"
+      ? await admitNativeRuntime({
+          engineRoot,
+          engineVersion: version,
+          snapshotRoot: input.snapshot.dependency_root,
+        })
+      : null;
     const identityMaterial = {
       schema_version: "review-lsp.engine-artifact.v1" as const,
       package_name: "typescript" as const,
       version,
       engine_kind: shape.kind,
       tree_manifest_sha256: tree.tree_manifest_sha256,
+      native_runtime: stableNativeRuntime(nativeRuntime),
       dependency_snapshot_id: input.snapshot.snapshot_id,
     };
 
@@ -156,6 +240,7 @@ export async function admitEngineArtifact(input: {
       entrypoint: shape.entrypoint,
       entrypoint_sha256: sha256(await readFile(shape.entrypoint)),
       file_count: tree.file_count,
+      native_runtime: nativeRuntime,
       // Policy the engine must be launched under, recorded with the artifact so a receipt
       // states the conditions rather than leaving them to the launch site.
       policy: {
@@ -420,8 +505,11 @@ export async function buildCandidateEngineLaunch(input: {
     };
     implementation = "typescript-language-server+candidate-tsserver";
   } else {
-    baseCommand = input.profile.node_executable;
-    baseArgs = [input.artifact.entrypoint, "--lsp", "--stdio"];
+    if (!input.artifact.native_runtime) {
+      throw new ReviewLspError("PROFILE_INVALID", "native TypeScript engine has no admitted platform runtime");
+    }
+    baseCommand = input.artifact.native_runtime.entrypoint;
+    baseArgs = ["--lsp", "--stdio"];
     initializationOptions = {};
     implementation = "typescript-native-lsp";
   }
@@ -432,6 +520,7 @@ export async function buildCandidateEngineLaunch(input: {
       readRoots: [
         input.semanticRoot,
         input.artifact.engine_root,
+        ...(input.artifact.native_runtime ? [input.artifact.native_runtime.root] : []),
         input.profile.typescript_root,
         serverRoot,
         dirname(input.profile.node_executable),
@@ -467,5 +556,6 @@ export function engineArtifactBinding(artifact: AdmittedEngineArtifact): string 
     version: artifact.version,
     engine_kind: artifact.engine_kind,
     tree_manifest_sha256: artifact.tree_manifest_sha256,
+    native_runtime: stableNativeRuntime(artifact.native_runtime),
   });
 }

@@ -76,6 +76,7 @@
   "devDependencies": {
     "@types/node": "24.10.0",
     "esbuild": "0.28.2",
+    "typescript7": "npm:typescript@7.0.2",
     "vitest": "4.1.11"
   },
   "license": "Apache-2.0"

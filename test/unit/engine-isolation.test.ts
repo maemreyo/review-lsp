@@ -71,6 +71,7 @@ async function snapshotWithEngine(
   version: string,
   shape: "TSSERVER_LEGACY" | "NATIVE_LSP" | "NEITHER",
   entryBytes = "// tsserver\n",
+  nativeBytes = "#!/bin/sh\nexit 0\n",
 ): Promise<DependencySnapshotDescriptor> {
   const root = await mkdtemp(join(tmpdir(), "review-lsp-engine-"));
   roots.push(root);
@@ -78,7 +79,21 @@ async function snapshotWithEngine(
   await mkdir(engineRoot, { recursive: true });
   await writeFile(join(root, "node_modules", "typescript", "package.json"), `${JSON.stringify({ name: "typescript", version })}\n`);
   if (shape === "TSSERVER_LEGACY") await writeFile(join(engineRoot, "tsserver.js"), entryBytes);
-  if (shape === "NATIVE_LSP") await writeFile(join(engineRoot, "tsc.js"), entryBytes);
+  if (shape === "NATIVE_LSP") {
+    await writeFile(join(engineRoot, "tsc.js"), entryBytes);
+    const nativeRoot = join(
+      root,
+      "node_modules",
+      "@typescript",
+      `typescript-${process.platform}-${process.arch}`,
+    );
+    await mkdir(join(nativeRoot, "lib"), { recursive: true });
+    await writeFile(join(nativeRoot, "package.json"), `${JSON.stringify({
+      name: `@typescript/typescript-${process.platform}-${process.arch}`,
+      version,
+    })}\n`);
+    await writeFile(join(nativeRoot, "lib", process.platform === "win32" ? "tsc.exe" : "tsc"), nativeBytes, { mode: 0o755 });
+  }
   return snapshotDescriptor(root);
 }
 
@@ -111,6 +126,23 @@ describe("candidate-selected engine admission", () => {
 
     expect(artifact?.engine_kind).toBe("NATIVE_LSP");
     expect(artifact?.entrypoint).toMatch(/lib\/tsc\.js$/);
+    expect(artifact?.native_runtime?.package_name).toBe(`@typescript/typescript-${process.platform}-${process.arch}`);
+    expect(artifact?.native_runtime?.version).toBe("7.0.2");
+    expect(artifact?.native_runtime?.tree_manifest_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(artifact?.native_runtime?.entrypoint_sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("binds native runtime bytes into the TypeScript 7 engine identity", async () => {
+    const first = await admitEngineArtifact({
+      snapshot: await snapshotWithEngine("7.0.2", "NATIVE_LSP", "// launcher\n", "native-a\n"),
+    });
+    const second = await admitEngineArtifact({
+      snapshot: await snapshotWithEngine("7.0.2", "NATIVE_LSP", "// launcher\n", "native-b\n"),
+    });
+
+    expect(first?.tree_manifest_sha256).toBe(second?.tree_manifest_sha256);
+    expect(first?.native_runtime?.tree_manifest_sha256).not.toBe(second?.native_runtime?.tree_manifest_sha256);
+    expect(first?.artifact_id).not.toBe(second?.artifact_id);
   });
 
   it("gives different identities to different engine bytes at the same version", async () => {
