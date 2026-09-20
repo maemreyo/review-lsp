@@ -55,6 +55,7 @@ interface DefinitionBinding {
   classification:
     | "SOURCE_CANDIDATE"
     | "DEPENDENCY_SNAPSHOT"
+    | "DERIVED_WORKSPACE_ARTIFACT"
     | "TOOLCHAIN_TYPESCRIPT"
     | "TOOLCHAIN_SERVER"
     | "UNBOUND";
@@ -153,6 +154,18 @@ async function bindDefinitionUri(
     return bytes
       ? { uri, classification: "DEPENDENCY_SNAPSHOT", path: classified.relative_path ?? "", sha256: sha256(bytes) }
       : { uri, classification: "UNBOUND", reason: "dependency snapshot path could not be read" };
+  }
+
+  if (classified.classification === "DERIVED_WORKSPACE_ARTIFACT") {
+    const bytes = await readFile(classified.realpath ?? classified.path).catch(() => undefined);
+    return bytes
+      ? {
+          uri,
+          classification: "DERIVED_WORKSPACE_ARTIFACT",
+          path: classified.relative_path ?? "",
+          sha256: sha256(bytes),
+        }
+      : { uri, classification: "UNBOUND", reason: "derived workspace artifact path could not be read" };
   }
 
   if (classified.classification === "TOOLCHAIN") {
@@ -272,6 +285,7 @@ export class SemanticSession {
           serverRoot,
           dirname(input.profile.node_executable),
           ...(snapshot ? [snapshot.dependency_root] : []),
+          ...(projection?.derived_artifact_roots ?? []),
         ]
       : [];
     const executionProfile = candidateEngine
@@ -288,7 +302,10 @@ export class SemanticSession {
           executionProfile,
           semanticRoot,
           writableRoots: [home, tmp],
-          additionalReadRoots: snapshot ? [snapshot.dependency_root] : [],
+          additionalReadRoots: [
+            ...(snapshot ? [snapshot.dependency_root] : []),
+            ...(projection?.derived_artifact_roots ?? []),
+          ],
         })
       : undefined;
 
