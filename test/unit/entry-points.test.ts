@@ -107,6 +107,42 @@ describe("workspace entry-point resolvability gate", () => {
     expect(result.findings[0]?.field).toBe("exports[.].types");
   });
 
+  it("fails closed when wildcard exports select unprovable generated targets", async () => {
+    const { root, manifests } = await workspace({
+      "packages/wild": {
+        manifest: {
+          name: "@fixture/wild",
+          exports: {
+            "./*": { types: "./dist/*.d.ts", import: "./dist/*.js" },
+          },
+        },
+        files: { "src/a.ts": "export const a = 1;\n" },
+      },
+    });
+    const result = await run(root, manifests);
+    expect(result.state).toBe("INCOMPLETE");
+    expect(result.targets_checked).toBe(1);
+    expect(result.findings[0]?.field).toBe("exports[./*].types");
+    expect(result.findings[0]?.declared_target).toBe("./dist/*.d.ts");
+  });
+
+  it("accepts a wildcard export when it maps to one concrete admitted target", async () => {
+    const { root, manifests } = await workspace({
+      "packages/wild": {
+        manifest: {
+          name: "@fixture/wild",
+          exports: {
+            "./*": { types: "./dist/index.d.ts" },
+          },
+        },
+        files: { "dist/index.d.ts": "export declare const value: number;\n" },
+      },
+    });
+    const result = await run(root, manifests);
+    expect(result.state).toBe("COMPLETE");
+    expect(result.targets_checked).toBe(1);
+  });
+
   it("resolves extensionless and directory targets the way a resolver would", async () => {
     const { root, manifests } = await workspace({
       "packages/ext": {

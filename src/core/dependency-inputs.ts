@@ -85,7 +85,35 @@ function yamlStringList(text: string, key: string): string[] {
   return values;
 }
 
-/** Expands a `packages/*`-style workspace glob against the candidate's admitted paths. */
+function workspaceGlobPattern(glob: string): RegExp {
+  if (glob.startsWith("!") || glob === "" || glob.startsWith("/") || glob.includes("\\")) {
+    throw new ReviewLspError("DEPENDENCY_UNSUPPORTED", `workspace glob ${JSON.stringify(glob)} is outside the admitted subset`);
+  }
+
+  const segments = glob.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new ReviewLspError("DEPENDENCY_UNSUPPORTED", `workspace glob ${JSON.stringify(glob)} has an unsupported path segment`);
+  }
+
+  const patternSegments = segments.map((segment) => {
+    if (segment === "**") return "[^\\0]+";
+    if (segment === "*") return "[^/]+";
+    // pnpm accepts a broader micromatch grammar. This provider intentionally implements only
+    // literal segments plus * and **; every other glob construct fails closed instead of
+    // silently shrinking the workspace authority used by later VERIFIED gates.
+    if (/[*?{}()[\]!]/.test(segment)) {
+      throw new ReviewLspError(
+        "DEPENDENCY_UNSUPPORTED",
+        `workspace glob ${JSON.stringify(glob)} uses unsupported pnpm glob syntax`,
+      );
+    }
+    return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  });
+
+  return new RegExp(`^${patternSegments.join("/")}/package\\.json$`);
+}
+
+/** Expands the admitted literal, single-star and recursive-star workspace-glob subset. */
 function workspaceManifestPaths(candidate: CandidateDescriptor, globs: string[]): string[] {
   const manifests = candidate.entries
     .filter((entry) => entry.kind === "file" && entry.path.endsWith("package.json"))
@@ -93,20 +121,14 @@ function workspaceManifestPaths(candidate: CandidateDescriptor, globs: string[])
 
   const matched = new Set<string>();
   for (const glob of globs) {
-    if (glob.startsWith("!")) {
-      throw new ReviewLspError("DEPENDENCY_UNSUPPORTED", `negated workspace glob ${JSON.stringify(glob)} is unsupported`);
-    }
-    // Support the shapes pnpm workspaces overwhelmingly use: `pkgs/*` and `pkgs/**`.
-    const pattern = new RegExp(`^${glob
-      .split("/")
-      .map((segment) => (segment === "**" ? "[^\0]+" : segment === "*" ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
-      .join("/")}/package\\.json$`);
+    const pattern = workspaceGlobPattern(glob);
     for (const path of manifests) {
       if (pattern.test(path)) matched.add(path);
     }
   }
   return [...matched].sort();
 }
+
 
 function parseNpmrc(path: string, text: string): Record<string, string> {
   const settings: Record<string, string> = {};

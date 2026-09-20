@@ -80,6 +80,22 @@ describe("dependency input derivation", () => {
       .rejects.toThrow(/DEPENDENCY_UNSUPPORTED/);
   });
 
+  it("fails closed for valid pnpm workspace glob syntax outside the admitted subset", async () => {
+    await expect(deriveDependencyInputs(await candidateFor({ workspaceGlobs: ["packages/{app,other}"] })))
+      .rejects.toThrow(/DEPENDENCY_UNSUPPORTED.*unsupported pnpm glob syntax/);
+  });
+
+  it("still admits literal, single-star and recursive-star workspace patterns", async () => {
+    const literal = await deriveDependencyInputs(await candidateFor({ workspaceGlobs: ["packages/app"] }));
+    expect(literal.workspace_manifests).toEqual(["packages/app/package.json"]);
+
+    const single = await deriveDependencyInputs(await candidateFor({ workspaceGlobs: ["packages/*"] }));
+    expect(single.workspace_manifests).toEqual(["packages/app/package.json"]);
+
+    const recursive = await deriveDependencyInputs(await candidateFor({ workspaceGlobs: ["packages/**"] }));
+    expect(recursive.workspace_manifests).toEqual(["packages/app/package.json"]);
+  });
+
   it("refuses an unsupported lockfile version", async () => {
     const lockfile = "lockfileVersion: '6.0'\n\nimporters:\n\n  .: {}\n";
     await expect(deriveDependencyInputs(await candidateFor({ lockfile })))

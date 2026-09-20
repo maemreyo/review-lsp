@@ -46,8 +46,10 @@ function selectedTargets(manifest: ManifestLike): { target: string; field: strin
   const exportsField = manifest.exports;
   if (exportsField && typeof exportsField === "object" && !Array.isArray(exportsField)) {
     for (const [subpath, value] of Object.entries(exportsField as Record<string, unknown>)) {
-      // Only literal subpaths are checked; a wildcard target cannot be stat'd meaningfully.
-      if (subpath.includes("*")) continue;
+      // Wildcard exports are deliberately not skipped. When the selected target itself contains
+      // a wildcard, the conservative existence check below cannot prove the generated semantic
+      // surface is present and therefore leaves the gate INCOMPLETE. A wildcard subpath that
+      // maps to one concrete target can still pass when that exact target exists.
       if (typeof value === "string") {
         targets.push({ target: value, field: `exports[${subpath}]` });
         continue;

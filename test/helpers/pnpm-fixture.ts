@@ -44,6 +44,8 @@ export interface PnpmFixtureShape {
   withDanglingPatch?: boolean;
   /** Sets the workspace package's `types` field, e.g. to build output absent from the candidate. */
   workspaceTypesTarget?: string;
+  /** Overrides the default `packages/*` workspace patterns. */
+  workspaceGlobs?: string[];
 }
 
 export interface PnpmFixture {
@@ -80,7 +82,7 @@ export async function createPnpmFixture(root: string, shape: PnpmFixtureShape = 
   };
   await writeFile(join(repo, "package.json"), `${JSON.stringify(rootManifest, null, 2)}\n`);
 
-  const workspaceLines = ["packages:", "  - packages/*"];
+  const workspaceLines = ["packages:", ...(shape.workspaceGlobs ?? ["packages/*"]).map((glob) => `  - ${glob}`)];
   if (shape.withPatch || shape.withDanglingPatch) {
     workspaceLines.push("", "patchedDependencies:", "  is-number@7.0.0: patches/is-number@7.0.0.patch");
   }
