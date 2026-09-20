@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { contentId, sha256 } from "./canonical.js";
+import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { runEntryPointGate } from "./entry-points.js";
 import { verifyDerivedWorkspaceArtifact } from "./derived-artifact.js";
+import { verifyDependencySnapshot } from "./dependency-snapshot.js";
 import { ReviewLspError } from "./errors.js";
 import type {
   CandidateDescriptor,
@@ -261,25 +262,265 @@ export interface BuildProjectionOptions {
   workspaceManifests?: string[];
 }
 
-export async function buildProjection(options: BuildProjectionOptions): Promise<ProjectionDescriptor> {
-  const { candidate, snapshot, stateDirectory } = options;
-  const derivedArtifacts = [...(options.derivedArtifacts ?? [])]
-    .sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+function normalizeWorkspaceManifests(paths: string[]): string[] {
+  const normalized = paths.map((path) => {
+    if (isAbsolute(path)) {
+      throw new ReviewLspError("PROJECTION_INVALID", `workspace manifest is absolute: ${path}`);
+    }
+    const value = normalize(path.split("/").join(sep));
+    if (value === ""
+      || value === "."
+      || value === ".."
+      || value.startsWith(`..${sep}`)
+      || isAbsolute(value)) {
+      throw new ReviewLspError("PROJECTION_INVALID", `workspace manifest escapes candidate authority: ${path}`);
+    }
+    return value.split(sep).join("/");
+  });
+  return [...new Set(normalized)].sort();
+}
 
-  const projectionId = contentId("proj", {
+function derivedMountPath(artifact: DerivedWorkspaceArtifactDescriptor): string {
+  const packageRoot = dirname(artifact.package_manifest_path) === "." ? "" : dirname(artifact.package_manifest_path);
+  return packageRoot
+    ? join(packageRoot, artifact.mount_relative_path)
+    : artifact.mount_relative_path;
+}
+
+function projectionIdentity(input: {
+  candidate: CandidateDescriptor;
+  snapshot: DependencySnapshotDescriptor | null;
+  derivedArtifacts: DerivedWorkspaceArtifactDescriptor[];
+  workspaceManifests: string[];
+}): string {
+  return contentId("proj", {
     schema_version: "review-lsp.projection.v1" as const,
     projection_implementation: PROJECTION_IMPLEMENTATION,
-    candidate_id: candidate.candidate_id,
-    source_manifest_sha256: candidate.source_manifest_sha256,
-    dependency_snapshot_id: snapshot?.snapshot_id ?? null,
-    dependency_tree_manifest_sha256: snapshot?.tree_manifest_sha256 ?? null,
-    derived_artifacts: derivedArtifacts.map((artifact) => ({
+    candidate_id: input.candidate.candidate_id,
+    source_manifest_sha256: input.candidate.source_manifest_sha256,
+    dependency_snapshot_id: input.snapshot?.snapshot_id ?? null,
+    dependency_tree_manifest_sha256: input.snapshot?.tree_manifest_sha256 ?? null,
+    derived_artifacts: input.derivedArtifacts.map((artifact) => ({
       artifact_id: artifact.artifact_id,
       output_tree_manifest_sha256: artifact.output_tree_manifest_sha256,
       package_manifest_path: artifact.package_manifest_path,
       mount_relative_path: artifact.mount_relative_path,
     })),
-    isolation: candidate.isolation,
+    workspace_manifests: input.workspaceManifests,
+    isolation: input.candidate.isolation,
+  });
+}
+
+async function dependencyMountPaths(snapshot: DependencySnapshotDescriptor | null): Promise<string[]> {
+  if (!snapshot) return [];
+  const dependencyRoot = snapshot.dependency_root;
+  const mounts: string[] = [];
+  async function visit(relativePath: string): Promise<void> {
+    const absolute = relativePath ? join(dependencyRoot, relativePath) : dependencyRoot;
+    for (const name of (await readdir(absolute)).sort()) {
+      const childRelative = relativePath ? join(relativePath, name) : name;
+      if (name === "node_modules") {
+        mounts.push(childRelative);
+        continue;
+      }
+      const info = await lstat(join(absolute, name));
+      if (info.isDirectory() && !info.isSymbolicLink()) await visit(childRelative);
+    }
+  }
+  await visit("");
+  return mounts.sort();
+}
+
+async function loadDerivedArtifactsForProjection(
+  projection: ProjectionDescriptor,
+  input: {
+    candidate: CandidateDescriptor;
+    snapshot: DependencySnapshotDescriptor | null;
+    stateDirectory: string;
+  },
+): Promise<DerivedWorkspaceArtifactDescriptor[]> {
+  if (projection.derived_artifact_ids.length === 0) return [];
+  if (!input.snapshot) {
+    throw new ReviewLspError("PROJECTION_INVALID", "projection declares derived artifacts without a dependency snapshot");
+  }
+
+  const artifacts: DerivedWorkspaceArtifactDescriptor[] = [];
+  for (const artifactId of projection.derived_artifact_ids) {
+    const descriptorPath = join(input.stateDirectory, "derived", artifactId, "derived-artifact.json");
+    let artifact: DerivedWorkspaceArtifactDescriptor;
+    try {
+      artifact = JSON.parse(await readFile(descriptorPath, "utf8")) as DerivedWorkspaceArtifactDescriptor;
+    } catch (error) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `projection derived artifact ${artifactId} is not readable: ${(error as Error).message}`,
+      );
+    }
+    await verifyDerivedWorkspaceArtifact(artifact, {
+      candidate: input.candidate,
+      snapshot: input.snapshot,
+      stateDirectory: input.stateDirectory,
+    });
+    artifacts.push(artifact);
+  }
+  artifacts.sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+  return artifacts;
+}
+
+/**
+ * Rebinds a persisted projection to exact candidate, snapshot, derived-artifact and gate inputs.
+ *
+ * Projection state is mutable local cache, so a matching projection_id in projection.json is
+ * never enough for reuse or semantic execution.
+ */
+export async function verifyProjectionDescriptor(
+  projection: ProjectionDescriptor,
+  input: {
+    candidate: CandidateDescriptor;
+    snapshot: DependencySnapshotDescriptor | null;
+    stateDirectory: string;
+  },
+): Promise<void> {
+  if (projection.schema_version !== "review-lsp.projection.v1"
+    || projection.projection_implementation !== PROJECTION_IMPLEMENTATION
+    || projection.candidate_id !== input.candidate.candidate_id
+    || projection.source_manifest_sha256 !== input.candidate.source_manifest_sha256
+    || projection.isolation !== input.candidate.isolation) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} is not bound to the exact candidate implementation`,
+    );
+  }
+
+  if (input.snapshot) {
+    await verifyDependencySnapshot(input.snapshot);
+    if (projection.dependency_snapshot_id !== input.snapshot.snapshot_id
+      || projection.dependency_tree_manifest_sha256 !== input.snapshot.tree_manifest_sha256) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `projection ${projection.projection_id} is not bound to the admitted dependency snapshot`,
+      );
+    }
+  } else if (projection.dependency_snapshot_id !== null
+    || projection.dependency_tree_manifest_sha256 !== null) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} declares dependency state without an admitted snapshot`,
+    );
+  }
+
+  const workspaceManifests = normalizeWorkspaceManifests(projection.workspace_manifests ?? []);
+  if (canonicalJson(workspaceManifests) !== canonicalJson(projection.workspace_manifests ?? [])) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} workspace manifest binding is not canonical`,
+    );
+  }
+
+  const derivedArtifacts = await loadDerivedArtifactsForProjection(projection, input);
+  const expectedId = projectionIdentity({
+    candidate: input.candidate,
+    snapshot: input.snapshot,
+    derivedArtifacts,
+    workspaceManifests,
+  });
+  if (expectedId !== projection.projection_id) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} does not match its exact input identity`,
+    );
+  }
+
+  const expectedExecutionRoot = join(
+    projectionDirectory(input.stateDirectory, projection.projection_id),
+    "execution",
+  );
+  const [actualExecutionRoot, canonicalExpectedExecutionRoot] = await Promise.all([
+    realpath(projection.execution_root).catch(() => null),
+    realpath(expectedExecutionRoot).catch(() => null),
+  ]);
+  if (!actualExecutionRoot
+    || !canonicalExpectedExecutionRoot
+    || actualExecutionRoot !== canonicalExpectedExecutionRoot
+    || resolvePath(projection.execution_root) !== resolvePath(expectedExecutionRoot)) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} execution root is not its content-addressed publication path`,
+    );
+  }
+
+  const expectedDerivedIds = derivedArtifacts.map((artifact) => artifact.artifact_id);
+  const expectedDerivedTrees = derivedArtifacts.map((artifact) => artifact.output_tree_manifest_sha256);
+  const expectedDerivedRoots = derivedArtifacts.map((artifact) => artifact.output_root);
+  const expectedDerivedMounts = derivedArtifacts.map(derivedMountPath).sort();
+  if (canonicalJson(projection.derived_artifact_ids) !== canonicalJson(expectedDerivedIds)
+    || canonicalJson(projection.derived_artifact_tree_manifests) !== canonicalJson(expectedDerivedTrees)
+    || canonicalJson(projection.derived_artifact_roots) !== canonicalJson(expectedDerivedRoots)
+    || canonicalJson(projection.derived_artifact_mounts) !== canonicalJson(expectedDerivedMounts)) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} derived-artifact bindings changed after publication`,
+    );
+  }
+
+  const expectedDependencyMounts = await dependencyMountPaths(input.snapshot);
+  if (canonicalJson(projection.dependency_mounts) !== canonicalJson(expectedDependencyMounts)) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} dependency mount binding changed after publication`,
+    );
+  }
+
+  await verifyProjectionSource(projection, input.candidate);
+
+  for (const artifact of derivedArtifacts) {
+    const mount = join(projection.execution_root, derivedMountPath(artifact));
+    const [mountedRoot, artifactRoot] = await Promise.all([
+      realpath(mount).catch(() => null),
+      realpath(artifact.output_root).catch(() => null),
+    ]);
+    if (!mountedRoot || !artifactRoot || mountedRoot !== artifactRoot) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `projection derived mount for ${artifact.artifact_id} no longer resolves to its admitted artifact`,
+      );
+    }
+  }
+
+  for (const mount of expectedDependencyMounts) {
+    const info = await lstat(join(projection.execution_root, mount)).catch(() => null);
+    if (!info || !info.isDirectory()) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        `projection dependency mount ${mount} is missing or no longer a directory facade`,
+      );
+    }
+  }
+
+  const gate = await runEntryPointGate({
+    projectionRoot: projection.execution_root,
+    workspaceManifests,
+    readManifest: (relativePath) => readFile(join(projection.execution_root, relativePath), "utf8"),
+  });
+  if (canonicalJson(gate) !== canonicalJson(projection.entry_point_gate)) {
+    throw new ReviewLspError(
+      "PROJECTION_INVALID",
+      `projection ${projection.projection_id} entry-point gate changed after publication`,
+    );
+  }
+}
+
+export async function buildProjection(options: BuildProjectionOptions): Promise<ProjectionDescriptor> {
+  const { candidate, snapshot, stateDirectory } = options;
+  const derivedArtifacts = [...(options.derivedArtifacts ?? [])]
+    .sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+  const workspaceManifests = normalizeWorkspaceManifests(options.workspaceManifests ?? []);
+
+  const projectionId = projectionIdentity({
+    candidate,
+    snapshot,
+    derivedArtifacts,
+    workspaceManifests,
   });
 
   const directory = projectionDirectory(stateDirectory, projectionId);
@@ -287,7 +528,10 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
 
   try {
     const existing = JSON.parse(await readFile(join(directory, "projection.json"), "utf8")) as ProjectionDescriptor;
-    if (existing.projection_id === projectionId) return existing;
+    if (existing.projection_id === projectionId) {
+      await verifyProjectionDescriptor(existing, { candidate, snapshot, stateDirectory });
+      return existing;
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -299,7 +543,6 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
 
   try {
     await writeCandidateSource(candidate, stagingExecution);
-    const workspaceManifests = options.workspaceManifests ?? [];
     const mounts = snapshot
       ? await linkDependencies(snapshot, stagingExecution, workspaceManifests)
       : [];
@@ -332,6 +575,7 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
       dependency_mounts: mounts,
       derived_artifact_mounts: derivedMounts,
       derived_artifact_roots: derivedArtifacts.map((artifact) => artifact.output_root),
+      workspace_manifests: workspaceManifests,
       entry_point_gate: gate,
       created_at: new Date().toISOString(),
     };
@@ -339,6 +583,7 @@ export async function buildProjection(options: BuildProjectionOptions): Promise<
     await writeFile(join(staging, "projection.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await sealProjection(stagingExecution);
     await rename(staging, directory);
+    await verifyProjectionDescriptor(descriptor, { candidate, snapshot, stateDirectory });
     return descriptor;
   } catch (error) {
     await makeOwnerWritable(staging);

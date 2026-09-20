@@ -9,7 +9,7 @@ import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
 import { ReviewLspError } from "./errors.js";
 import { assertCoordinateExpectation, buildCoordinateContext } from "./coordinate.js";
-import { classifyProjectionUri, verifyProjectionSource } from "./projection.js";
+import { classifyProjectionUri, verifyProjectionDescriptor } from "./projection.js";
 import { admitEngineArtifact, buildCandidateEngineLaunch, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
 import {
   alignmentBlocksStrongAdmission,
@@ -234,7 +234,13 @@ export class SemanticSession {
     const projection = input.projection ?? null;
     const snapshot = input.snapshot ?? null;
     const resolvingProject = input.resolvingProject ?? null;
-    if (projection) await verifyProjectionSource(projection, input.candidate);
+    if (projection) {
+      await verifyProjectionDescriptor(projection, {
+        candidate: input.candidate,
+        snapshot,
+        stateDirectory: input.stateDirectory,
+      });
+    }
 
     const semanticRoot = projection?.execution_root ?? input.candidate.source_root;
     const provisionalSessionId = contentId("sessroot", {

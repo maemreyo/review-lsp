@@ -58,10 +58,41 @@ describe("semantic execution projection", () => {
     await expect(readFile(join(candidate.source_root, "node_modules", ".modules.yaml"))).rejects.toThrow();
   });
 
-  it("gives the same projection identity to the same candidate and dependency state", async () => {
+  it("gives the same projection identity to the same candidate, dependency state and gate scope", async () => {
     const { candidate, projection, state } = await projected();
-    const again = await buildProjection({ candidate, snapshot: null, stateDirectory: state });
+    const again = await buildProjection({
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+      workspaceManifests: ["packages/app/package.json"],
+    });
     expect(again.projection_id).toBe(projection.projection_id);
+  });
+
+  it("binds the workspace-manifest gate scope into projection identity", async () => {
+    const { candidate, projection, state } = await projected();
+    const ungated = await buildProjection({
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+      workspaceManifests: [],
+    });
+    projections.push(ungated);
+
+    expect(ungated.projection_id).not.toBe(projection.projection_id);
+    expect(ungated.workspace_manifests).toEqual([]);
+    expect(projection.workspace_manifests).toEqual(["packages/app/package.json"]);
+  });
+
+  it("rejects a workspace-manifest path that lexically escapes candidate authority", async () => {
+    const { candidate, state } = await projected();
+
+    await expect(buildProjection({
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+      workspaceManifests: ["../outside/package.json"],
+    })).rejects.toThrow(/PROJECTION_INVALID/);
   });
 
   it("detects drift between the projection and the candidate it must reproduce", async () => {
@@ -72,6 +103,21 @@ describe("semantic execution projection", () => {
     await writeFile(target, '{"name":"tampered"}\n');
 
     await expect(verifyProjectionSource(projection, candidate)).rejects.toThrow(/PROJECTION_INVALID/);
+  });
+
+  it("rejects a cached descriptor whose execution root was forged", async () => {
+    const { candidate, projection, state } = await projected();
+    const descriptorPath = join(state, "projections", projection.projection_id, "projection.json");
+    const descriptor = JSON.parse(await readFile(descriptorPath, "utf8")) as ProjectionDescriptor;
+    descriptor.execution_root = candidate.source_root;
+    await writeFile(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+
+    await expect(buildProjection({
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+      workspaceManifests: ["packages/app/package.json"],
+    })).rejects.toThrow(/PROJECTION_INVALID/);
   });
 
   it("runs the entry-point gate as part of building the projection", async () => {
@@ -100,6 +146,22 @@ describe("semantic execution projection", () => {
 
     expect(projection.entry_point_gate.state).toBe("INCOMPLETE");
     expect(projection.entry_point_gate.findings[0]?.declared_target).toBe("./dist/index.d.ts");
+
+    const descriptorPath = join(state, "projections", projection.projection_id, "projection.json");
+    const descriptor = JSON.parse(await readFile(descriptorPath, "utf8")) as ProjectionDescriptor;
+    descriptor.entry_point_gate = {
+      ...descriptor.entry_point_gate,
+      state: "COMPLETE",
+      findings: [],
+    };
+    await writeFile(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+
+    await expect(buildProjection({
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+      workspaceManifests: ["packages/app/package.json"],
+    })).rejects.toThrow(/PROJECTION_INVALID/);
   });
 });
 

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
+import { contentId } from "../../src/core/canonical.js";
 import { scanDependencyTree } from "../../src/core/dependency-tree.js";
 import {
   deriveWorkspaceArtifact,
@@ -111,25 +112,28 @@ async function scenario(options: {
     verbatimSymlinks: true,
   });
   const scan = await scanDependencyTree(snapshotRoot);
-  const snapshot: DependencySnapshotDescriptor = {
-    schema_version: "review-lsp.dependency-snapshot.v1",
-    snapshot_id: "depsnap_fixture_derived",
-    ecosystem: "node",
-    package_manager: "pnpm",
+  const snapshotIdentity = {
+    schema_version: "review-lsp.dependency-snapshot.v1" as const,
+    ecosystem: "node" as const,
+    package_manager: "pnpm" as const,
     package_manager_version: "10.20.0",
     platform: process.platform,
     arch: process.arch,
     input_set_id: "depin_fixture_derived",
+    network_policy: "OFFLINE" as const,
+    script_policy: "IGNORE_SCRIPTS" as const,
+    lockfile_policy: "FROZEN" as const,
+    dependency_graph: "INCLUDES_DEV" as const,
+    tree_manifest_sha256: scan.tree_manifest_sha256,
+  };
+  const snapshot: DependencySnapshotDescriptor = {
+    ...snapshotIdentity,
+    snapshot_id: contentId("depsnap", snapshotIdentity),
     input_manifest: [],
     lockfile_binding: { path: "pnpm-lock.yaml", sha256: "0".repeat(64), byte_count: 0 },
     workspace_binding: null,
     patch_binding: [],
     config_binding: {},
-    network_policy: "OFFLINE",
-    script_policy: "IGNORE_SCRIPTS",
-    lockfile_policy: "FROZEN",
-    dependency_graph: "INCLUDES_DEV",
-    tree_manifest_sha256: scan.tree_manifest_sha256,
     dependency_root: snapshotRoot,
     file_count: scan.file_count,
     symlink_count: scan.symlink_count,

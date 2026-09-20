@@ -340,6 +340,8 @@ export interface ProjectionDescriptor {
   dependency_mounts: string[];
   derived_artifact_mounts: string[];
   derived_artifact_roots: string[];
+  /** Sorted candidate-relative workspace manifests whose declared entry points this projection gates. */
+  workspace_manifests: string[];
   entry_point_gate: EntryPointGateResult;
   created_at: string;
 }
