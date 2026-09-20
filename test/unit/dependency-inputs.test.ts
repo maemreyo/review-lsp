@@ -85,6 +85,12 @@ describe("dependency input derivation", () => {
       .rejects.toThrow(/DEPENDENCY_UNSUPPORTED.*unsupported pnpm glob syntax/);
   });
 
+  it("fails closed for valid workspace YAML syntax outside the admitted parser subset", async () => {
+    await expect(deriveDependencyInputs(await candidateFor({
+      workspaceYaml: "packages: ['packages/*']\n",
+    }))).rejects.toThrow(/DEPENDENCY_UNSUPPORTED.*block-list syntax/);
+  });
+
   it("still admits literal, single-star and recursive-star workspace patterns", async () => {
     const literal = await deriveDependencyInputs(await candidateFor({ workspaceGlobs: ["packages/app"] }));
     expect(literal.workspace_manifests).toEqual(["packages/app/package.json"]);

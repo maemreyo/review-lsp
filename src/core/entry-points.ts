@@ -37,14 +37,37 @@ interface ManifestLike {
  * Only targets that can carry type information are collected. A package that declares none is
  * not a finding: TypeScript may still resolve it from its source layout.
  */
-function selectedTargets(manifest: ManifestLike): { target: string; field: string }[] {
-  const targets: { target: string; field: string }[] = [];
+interface SelectedTarget {
+  target: string;
+  field: string;
+}
+
+interface UnsupportedExportSurface {
+  field: string;
+  declared_target: string;
+  reason: string;
+}
+
+function selectedTargets(manifest: ManifestLike): {
+  targets: SelectedTarget[];
+  unsupported: UnsupportedExportSurface[];
+} {
+  const targets: SelectedTarget[] = [];
+  const unsupported: UnsupportedExportSurface[] = [];
 
   if (typeof manifest.types === "string") targets.push({ target: manifest.types, field: "types" });
   else if (typeof manifest.typings === "string") targets.push({ target: manifest.typings, field: "typings" });
 
   const exportsField = manifest.exports;
-  if (exportsField && typeof exportsField === "object" && !Array.isArray(exportsField)) {
+  if (typeof exportsField === "string") {
+    targets.push({ target: exportsField, field: "exports" });
+  } else if (Array.isArray(exportsField)) {
+    unsupported.push({
+      field: "exports",
+      declared_target: JSON.stringify(exportsField),
+      reason: "exports arrays are outside the admitted static entry-point subset",
+    });
+  } else if (exportsField && typeof exportsField === "object") {
     for (const [subpath, value] of Object.entries(exportsField as Record<string, unknown>)) {
       // Wildcard exports are deliberately not skipped. When the selected target itself contains
       // a wildcard, the conservative existence check below cannot prove the generated semantic
@@ -54,23 +77,54 @@ function selectedTargets(manifest: ManifestLike): { target: string; field: strin
         targets.push({ target: value, field: `exports[${subpath}]` });
         continue;
       }
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        unsupported.push({
+          field: `exports[${subpath}]`,
+          declared_target: JSON.stringify(value),
+          reason: "exports branch is not a statically admitted string/condition object",
+        });
+        continue;
+      }
+
       const conditions = value as Record<string, unknown>;
+      let selected = false;
       for (const condition of [...TYPE_CONDITIONS, ...RUNTIME_CONDITIONS]) {
+        if (!(condition in conditions)) continue;
+        selected = true;
         const target = conditions[condition];
         if (typeof target === "string") {
           targets.push({ target, field: `exports[${subpath}].${condition}` });
-          break;
+        } else {
+          unsupported.push({
+            field: `exports[${subpath}].${condition}`,
+            declared_target: JSON.stringify(target),
+            reason: "nested/array export conditions are outside the admitted static subset",
+          });
         }
+        break;
+      }
+      if (!selected) {
+        unsupported.push({
+          field: `exports[${subpath}]`,
+          declared_target: JSON.stringify(value),
+          reason: "exports branch has no admitted TypeScript/runtime condition",
+        });
       }
     }
+  } else if (exportsField !== undefined) {
+    unsupported.push({
+      field: "exports",
+      declared_target: JSON.stringify(exportsField),
+      reason: "exports field is outside the admitted static entry-point subset",
+    });
   }
 
-  if (targets.length === 0 && typeof manifest.main === "string") {
+  if (targets.length === 0 && unsupported.length === 0 && typeof manifest.main === "string") {
     targets.push({ target: manifest.main, field: "main" });
   }
-  return targets;
+  return { targets, unsupported };
 }
+
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -127,7 +181,18 @@ export async function runEntryPointGate(input: EntryPointGateInput): Promise<Ent
     }
 
     const packageRoot = resolvePath(input.projectionRoot, dirname(manifestPath));
-    for (const { target, field } of selectedTargets(manifest)) {
+    const selection = selectedTargets(manifest);
+    for (const unsupported of selection.unsupported) {
+      checked += 1;
+      findings.push({
+        manifest_path: manifestPath,
+        package_name: typeof manifest.name === "string" ? manifest.name : null,
+        field: unsupported.field,
+        declared_target: unsupported.declared_target,
+        limitation: `${manifestPath} ${unsupported.reason}; semantic entry-point completeness cannot be VERIFIED`,
+      });
+    }
+    for (const { target, field } of selection.targets) {
       checked += 1;
       if (await targetResolves(packageRoot, target)) continue;
       findings.push({

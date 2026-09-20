@@ -143,6 +143,36 @@ describe("workspace entry-point resolvability gate", () => {
     expect(result.targets_checked).toBe(1);
   });
 
+  it("checks a root string exports target instead of silently ignoring it", async () => {
+    const { root, manifests } = await workspace({
+      "packages/string-export": {
+        manifest: { name: "@fixture/string-export", exports: "./dist/index.js" },
+        files: { "src/index.ts": "export const value = 1;\n" },
+      },
+    });
+    const result = await run(root, manifests);
+    expect(result.state).toBe("INCOMPLETE");
+    expect(result.findings[0]?.field).toBe("exports");
+  });
+
+  it("fails closed for exports arrays and nested conditions outside the static subset", async () => {
+    const { root, manifests } = await workspace({
+      "packages/array-export": {
+        manifest: { name: "@fixture/array-export", exports: ["./dist/a.js", "./dist/b.js"] },
+      },
+      "packages/nested-export": {
+        manifest: {
+          name: "@fixture/nested-export",
+          exports: { ".": { import: { types: "./dist/index.d.ts", default: "./dist/index.js" } } },
+        },
+      },
+    });
+    const result = await run(root, manifests);
+    expect(result.state).toBe("INCOMPLETE");
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((finding) => finding.limitation).join("\n")).toMatch(/outside the admitted static/);
+  });
+
   it("resolves extensionless and directory targets the way a resolver would", async () => {
     const { root, manifests } = await workspace({
       "packages/ext": {

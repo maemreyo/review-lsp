@@ -46,6 +46,8 @@ export interface PnpmFixtureShape {
   workspaceTypesTarget?: string;
   /** Overrides the default `packages/*` workspace patterns. */
   workspaceGlobs?: string[];
+  /** Replaces pnpm-workspace.yaml verbatim when provided. */
+  workspaceYaml?: string;
 }
 
 export interface PnpmFixture {
@@ -86,7 +88,10 @@ export async function createPnpmFixture(root: string, shape: PnpmFixtureShape = 
   if (shape.withPatch || shape.withDanglingPatch) {
     workspaceLines.push("", "patchedDependencies:", "  is-number@7.0.0: patches/is-number@7.0.0.patch");
   }
-  await writeFile(join(repo, "pnpm-workspace.yaml"), `${workspaceLines.join("\n")}\n`);
+  await writeFile(
+    join(repo, "pnpm-workspace.yaml"),
+    shape.workspaceYaml ?? `${workspaceLines.join("\n")}\n`,
+  );
 
   if (shape.withPatch) {
     await mkdir(join(repo, "patches"), { recursive: true });

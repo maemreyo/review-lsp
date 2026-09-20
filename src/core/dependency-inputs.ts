@@ -69,21 +69,45 @@ function yamlTopLevelScalar(text: string, key: string): string | undefined {
   return undefined;
 }
 
-/** Collects `packages:` globs from `pnpm-workspace.yaml` without a full YAML parser. */
+/** Collects one block-style YAML string list while failing closed on unsupported syntax. */
 function yamlStringList(text: string, key: string): string[] {
   const lines = text.split("\n");
-  const start = lines.findIndex((line) => !line.startsWith(" ") && line.trim() === `${key}:`);
+  const start = lines.findIndex((line) => {
+    if (line.startsWith(" ") || line.startsWith("\t") || line.trim().startsWith("#")) return false;
+    const separator = line.indexOf(":");
+    return separator >= 0 && line.slice(0, separator).trim() === key;
+  });
   if (start < 0) return [];
+
+  const header = lines[start] ?? "";
+  const separator = header.indexOf(":");
+  if (header.slice(separator + 1).trim() !== "") {
+    throw new ReviewLspError(
+      "DEPENDENCY_UNSUPPORTED",
+      `pnpm-workspace.yaml ${key} must use the admitted block-list syntax`,
+    );
+  }
+
   const values: string[] = [];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() === "" || line.trim().startsWith("#")) continue;
     if (!line.startsWith(" ") && !line.startsWith("\t")) break;
     const item = line.trim();
-    if (!item.startsWith("- ")) break;
-    values.push(item.slice(2).trim().replace(/^['"]|['"]$/g, ""));
+    if (!item.startsWith("- ")) {
+      throw new ReviewLspError(
+        "DEPENDENCY_UNSUPPORTED",
+        `pnpm-workspace.yaml ${key} contains unsupported YAML list syntax`,
+      );
+    }
+    const value = item.slice(2).trim().replace(/^['"]|['"]$/g, "");
+    if (!value) {
+      throw new ReviewLspError("DEPENDENCY_UNSUPPORTED", `pnpm-workspace.yaml ${key} contains an empty workspace pattern`);
+    }
+    values.push(value);
   }
   return values;
 }
+
 
 function workspaceGlobPattern(glob: string): RegExp {
   if (glob.startsWith("!") || glob === "" || glob.startsWith("/") || glob.includes("\\")) {
