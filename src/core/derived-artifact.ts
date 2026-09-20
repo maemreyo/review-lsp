@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve as resolvePath, sep } from "node:path";
 
 import { readCandidateFile } from "./candidate.js";
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
@@ -193,8 +193,30 @@ async function strictRecipe(candidate: CandidateDescriptor, manifestPath: string
     );
   }
 
-  const outAbsolute = resolvePath("/", dirname(projectConfigPath), outDir);
-  if (!inside(packageAbsolute, outAbsolute) || outAbsolute === packageAbsolute) {
+  // Preserve lexical traversal before projecting candidate-relative paths onto the
+  // synthetic "/" namespace. resolve("/", "../escaped") would otherwise collapse the
+  // traversal into "/escaped" and make a root-package escape look like a child of "/".
+  const outCandidateRelative = normalize(join(dirname(projectConfigPath), outDir));
+  if (isAbsolute(outCandidateRelative)
+    || outCandidateRelative === ".."
+    || outCandidateRelative.startsWith(`..${sep}`)) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_UNSUPPORTED",
+      `${projectConfigPath} outDir escapes the candidate root`,
+    );
+  }
+  const normalizedPackageRoot = packageRoot.split("/").join(sep);
+  if (normalizedPackageRoot
+    && outCandidateRelative !== normalizedPackageRoot
+    && !outCandidateRelative.startsWith(`${normalizedPackageRoot}${sep}`)) {
+    throw new ReviewLspError(
+      "DERIVED_ARTIFACT_UNSUPPORTED",
+      `${projectConfigPath} outDir must stay inside its workspace package`,
+    );
+  }
+
+  const outAbsolute = resolvePath("/", outCandidateRelative);
+  if (outAbsolute === packageAbsolute) {
     throw new ReviewLspError(
       "DERIVED_ARTIFACT_UNSUPPORTED",
       `${projectConfigPath} outDir must be a contained subdirectory of the workspace package`,

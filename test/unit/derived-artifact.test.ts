@@ -52,7 +52,11 @@ async function git(repo: string, ...args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-async function scenario(): Promise<{
+async function scenario(options: {
+  buildScript?: string;
+  outDir?: string;
+  source?: string;
+} = {}): Promise<{
   candidate: CandidateDescriptor;
   snapshot: DependencySnapshotDescriptor;
   projection: ProjectionDescriptor;
@@ -74,7 +78,7 @@ async function scenario(): Promise<{
     version: "0.0.0",
     private: true,
     type: "module",
-    scripts: { build: "tsc -p tsconfig.json" },
+    scripts: { build: options.buildScript ?? "tsc -p tsconfig.json" },
     types: "./dist/index.d.ts",
   }, null, 2)}\n`);
   await writeFile(join(repo, "tsconfig.json"), `${JSON.stringify({
@@ -84,12 +88,12 @@ async function scenario(): Promise<{
       moduleResolution: "NodeNext",
       declaration: true,
       rootDir: "./src",
-      outDir: "./dist",
+      outDir: options.outDir ?? "./dist",
       strict: true,
     },
     include: ["src/**/*.ts"],
   }, null, 2)}\n`);
-  await writeFile(join(repo, "src", "index.ts"), "export const answer: number = 42;\n");
+  await writeFile(join(repo, "src", "index.ts"), options.source ?? "export const answer: number = 42;\n");
   await git(repo, "add", "-A");
   await git(repo, "commit", "-qm", "derived fixture");
   const commit = await git(repo, "rev-parse", "HEAD");
@@ -221,5 +225,59 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
       derivedArtifacts: [tampered],
       workspaceManifests: ["package.json"],
     })).rejects.toThrow(/DERIVED_ARTIFACT_INVALID/);
+  }, 120_000);
+
+  it("keeps emitted declarations advisory when the compiler reports a type error", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      source: 'export const answer: number = "not-a-number";\n',
+    });
+    const artifact = await deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    });
+
+    expect(artifact.compiler_exit_code).not.toBe(0);
+    expect(artifact.diagnostic_error_count).toBeGreaterThan(0);
+    expect(artifact.strong_admission).toBe(false);
+    expect(artifact.limitation).toMatch(/compiler exited/);
+    await expect(readFile(join(artifact.output_root, "index.d.ts"), "utf8")).resolves.toMatch(/answer/);
+    await expect(buildProjection({
+      candidate,
+      snapshot,
+      stateDirectory: state,
+      derivedArtifacts: [artifact],
+      workspaceManifests: ["package.json"],
+    })).rejects.toThrow(/advisory only/);
+  }, 120_000);
+
+  it("refuses custom build recipes instead of executing candidate scripts", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      buildScript: "node custom-build.js",
+    });
+
+    await expect(deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    })).rejects.toThrow(/DERIVED_ARTIFACT_UNSUPPORTED/);
+  }, 120_000);
+
+  it("refuses a derived outDir that escapes its workspace package", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      outDir: "../escaped-dist",
+    });
+
+    await expect(deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    })).rejects.toThrow(/DERIVED_ARTIFACT_UNSUPPORTED/);
   }, 120_000);
 });

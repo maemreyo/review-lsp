@@ -1,11 +1,14 @@
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   admitEngineArtifact,
+  buildMacSandboxPolicy,
   engineMayClaimExactProject,
   resolveExecutionProfile,
 } from "../../src/core/engine-isolation.js";
@@ -155,4 +158,47 @@ describe("execution profile and the EXACT_PROJECT ceiling", () => {
     expect(resolved.kind).toBe("TRUSTED_LOCAL");
     expect(resolved.reason).toMatch(/no enforced execution profile/);
   });
+
+  it.runIf(process.platform === "darwin")("enforces the network deny in the macOS sandbox", async () => {
+    const root = await mkdtemp(join(tmpdir(), "review-lsp-sandbox-network-"));
+    roots.push(root);
+    const policy = await buildMacSandboxPolicy({
+      readRoots: [root],
+      writableRoots: [root],
+    });
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("failed to bind local test server");
+
+    try {
+      const exit = await new Promise<number | null>((resolve, reject) => {
+        const child = spawn("/usr/bin/sandbox-exec", [
+          "-p",
+          policy.policy,
+          process.execPath,
+          "-e",
+          [
+            'const net=require("node:net");',
+            `const s=net.connect(${address.port},"127.0.0.1");`,
+            's.once("connect",()=>process.exit(0));',
+            's.once("error",()=>process.exit(7));',
+            'setTimeout(()=>process.exit(8),1500);',
+          ].join(""),
+        ], {
+          cwd: root,
+          env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root },
+          stdio: "ignore",
+        });
+        child.once("error", reject);
+        child.once("exit", (code) => resolve(code));
+      });
+      expect(exit).not.toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 10_000);
 });
