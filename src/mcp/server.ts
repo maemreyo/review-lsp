@@ -1,9 +1,19 @@
+import { dirname } from "node:path";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 
 import { ReviewLspError } from "../core/errors.js";
-import type { SemanticSession } from "../core/session.js";
+import type { SemanticRuntimeManager } from "../core/runtime.js";
+import { resolveProjectForDocument } from "../core/toolchain.js";
+import type {
+  CandidateDescriptor,
+  DependencySnapshotDescriptor,
+  ProjectionDescriptor,
+  ResolvingProject,
+  TypeScriptProfile,
+} from "../core/types.js";
 
 function jsonResult(value: unknown) {
   return {
@@ -23,16 +33,53 @@ function errorResult(error: unknown) {
   };
 }
 
-function requireCandidate(session: SemanticSession, expectedCandidateId: string): void {
-  if (expectedCandidateId !== session.candidate.candidate_id) {
+export interface CandidateMcpHost {
+  candidate: CandidateDescriptor;
+  profile: TypeScriptProfile;
+  stateDirectory: string;
+  snapshot: DependencySnapshotDescriptor | null;
+  projection: ProjectionDescriptor | null;
+  derivedArtifactSnapshotIds: string[];
+  runtimeManager: SemanticRuntimeManager;
+  resolvingProjectIdentity(project: ResolvingProject): string;
+}
+
+function requireCandidate(host: CandidateMcpHost, expectedCandidateId: string): void {
+  if (expectedCandidateId !== host.candidate.candidate_id) {
     throw new ReviewLspError(
       "CANDIDATE_MISMATCH",
-      `expected candidate ${expectedCandidateId} but this MCP process is bound to ${session.candidate.candidate_id}`,
+      `expected candidate ${expectedCandidateId} but this MCP process is bound to ${host.candidate.candidate_id}`,
     );
   }
 }
 
-export async function serveCandidateMcp(session: SemanticSession): Promise<void> {
+function candidateInfoProject(candidate: CandidateDescriptor): ResolvingProject {
+  const config = candidate.entries.find((entry) => (
+    entry.kind === "file"
+    && /(^|\/)(?:tsconfig|jsconfig)(?:\.[^/]+)?\.json$/.test(entry.path)
+  ));
+  if (!config) {
+    return { state: "UNRESOLVED", config_path: null, config_sha256: null, project_root: null };
+  }
+  const directory = dirname(config.path);
+  const probe = directory === "." ? "__review_lsp_info__.ts" : `${directory}/__review_lsp_info__.ts`;
+  return resolveProjectForDocument(candidate, probe);
+}
+
+async function acquireHostRuntime(host: CandidateMcpHost, project: ResolvingProject) {
+  return host.runtimeManager.acquire({
+    candidate: host.candidate,
+    profile: host.profile,
+    stateDirectory: host.stateDirectory,
+    snapshot: host.snapshot,
+    projection: host.projection,
+    derivedArtifactSnapshotIds: host.derivedArtifactSnapshotIds,
+    resolvingProject: project,
+    resolvingProjectIdentity: host.resolvingProjectIdentity(project),
+  });
+}
+
+export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
   const server = new McpServer({
     name: "review-lsp",
     version: "0.0.0",
@@ -42,8 +89,10 @@ export async function serveCandidateMcp(session: SemanticSession): Promise<void>
     description: "Return the immutable candidate/environment/profile identity bound to this Review-LSP MCP process.",
     inputSchema: {},
   }, async () => {
+    let lease;
     try {
-      const info = await session.candidateInfo();
+      lease = await acquireHostRuntime(host, candidateInfoProject(host.candidate));
+      const info = await lease.session.candidateInfo();
       return jsonResult({
         candidate_id: info.candidate.candidate_id,
         repository_identity: info.candidate.repository_identity,
@@ -60,9 +109,12 @@ export async function serveCandidateMcp(session: SemanticSession): Promise<void>
         limitations: info.environment.limitations,
         session_id: info.session_id,
         session_epoch: info.session_epoch,
+        runtime_key_id: lease.key_id,
       });
     } catch (error) {
       return errorResult(error);
+    } finally {
+      lease?.release();
     }
   });
 
@@ -77,11 +129,16 @@ export async function serveCandidateMcp(session: SemanticSession): Promise<void>
     description: "Run textDocument/hover against the exact candidate bound to this server and return a provenance receipt.",
     inputSchema: querySchema,
   }, async ({ expected_candidate_id, path, line, character }) => {
+    let lease;
     try {
-      requireCandidate(session, expected_candidate_id);
-      return jsonResult(await session.hover({ path, line, character }));
+      requireCandidate(host, expected_candidate_id);
+      const project = resolveProjectForDocument(host.candidate, path);
+      lease = await acquireHostRuntime(host, project);
+      return jsonResult(await lease.session.hover({ path, line, character }));
     } catch (error) {
       return errorResult(error);
+    } finally {
+      lease?.release();
     }
   });
 
@@ -89,11 +146,16 @@ export async function serveCandidateMcp(session: SemanticSession): Promise<void>
     description: "Run textDocument/definition against the exact candidate bound to this server and return a provenance receipt with URI bindings.",
     inputSchema: querySchema,
   }, async ({ expected_candidate_id, path, line, character }) => {
+    let lease;
     try {
-      requireCandidate(session, expected_candidate_id);
-      return jsonResult(await session.definition({ path, line, character }));
+      requireCandidate(host, expected_candidate_id);
+      const project = resolveProjectForDocument(host.candidate, path);
+      lease = await acquireHostRuntime(host, project);
+      return jsonResult(await lease.session.definition({ path, line, character }));
     } catch (error) {
       return errorResult(error);
+    } finally {
+      lease?.release();
     }
   });
 
@@ -102,11 +164,11 @@ export async function serveCandidateMcp(session: SemanticSession): Promise<void>
     process.stderr.write(`review-lsp MCP transport error: ${error.message}\n`);
   };
   transport.onclose = () => {
-    void session.close();
+    void host.runtimeManager.dispose();
   };
 
   const shutdown = async (): Promise<void> => {
-    await session.close().catch(() => undefined);
+    await host.runtimeManager.dispose().catch(() => undefined);
     await transport.close().catch(() => undefined);
   };
   process.once("SIGINT", () => void shutdown().finally(() => process.exit(130)));

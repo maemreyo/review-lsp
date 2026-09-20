@@ -77,7 +77,7 @@ try {
     throw new Error(`candidate_info binding mismatch: ${JSON.stringify(structured)}`);
   }
 
-  const hover = await client.callTool({
+  const hovers = await Promise.all(Array.from({ length: 4 }, () => client.callTool({
     name: "review_lsp_hover",
     arguments: {
       expected_candidate_id: structured.candidate_id,
@@ -85,10 +85,16 @@ try {
       line: 1,
       character: "export const result = ".length,
     },
-  });
-  if (hover.isError) throw new Error(`hover failed: ${JSON.stringify(hover.content)}`);
-  if (!JSON.stringify(hover.structuredContent).includes("string")) {
-    throw new Error(`hover did not expose candidate string semantics: ${JSON.stringify(hover.structuredContent)}`);
+  })));
+  for (const hover of hovers) {
+    if (hover.isError) throw new Error(`hover failed: ${JSON.stringify(hover.content)}`);
+    if (!JSON.stringify(hover.structuredContent).includes("string")) {
+      throw new Error(`hover did not expose candidate string semantics: ${JSON.stringify(hover.structuredContent)}`);
+    }
+  }
+  const sessionIds = new Set(hovers.map((hover) => hover.structuredContent?.session_id));
+  if (sessionIds.size !== 1 || !sessionIds.has(structured.session_id)) {
+    throw new Error(`concurrent queries did not share one live semantic runtime: info=${structured.session_id} hover=${JSON.stringify([...sessionIds])}`);
   }
 
   const mismatch = await client.callTool({
@@ -113,6 +119,8 @@ try {
     ok: true,
     commit,
     candidate_id: structured.candidate_id,
+    session_id: structured.session_id,
+    concurrent_session_ids: [...sessionIds],
     tools: names,
   }) + "\n");
 } finally {

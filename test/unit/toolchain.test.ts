@@ -10,6 +10,7 @@ import {
   assessToolchainAlignment,
   resolveProjectForDocument,
   resolveProjectToolchain,
+  resolvingProjectIdentity,
 } from "../../src/core/toolchain.js";
 import type { CandidateDescriptor } from "../../src/core/types.js";
 import { createPnpmFixture } from "../helpers/pnpm-fixture.js";
@@ -91,6 +92,23 @@ describe("toolchain alignment", () => {
 });
 
 describe("resolving project", () => {
+  it("binds config path as well as config bytes into resolving-project identity", () => {
+    const a = resolvingProjectIdentity({
+      state: "RESOLVED",
+      config_path: "packages/a/tsconfig.json",
+      config_sha256: "f".repeat(64),
+      project_root: "packages/a",
+    });
+    const b = resolvingProjectIdentity({
+      state: "RESOLVED",
+      config_path: "packages/b/tsconfig.json",
+      config_sha256: "f".repeat(64),
+      project_root: "packages/b",
+    });
+
+    expect(a).not.toBe(b);
+  });
+
   it("resolves the nearest enclosing config for a document", async () => {
     const candidate = await candidateFor();
     const resolved = resolveProjectForDocument(candidate, "packages/app/src/index.ts");

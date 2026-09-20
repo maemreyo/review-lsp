@@ -1,6 +1,7 @@
 import { contentId } from "./canonical.js";
 import { ReviewLspError } from "./errors.js";
 import { SemanticSession } from "./session.js";
+import { resolvingProjectIdentity } from "./toolchain.js";
 import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
@@ -131,7 +132,7 @@ export class SemanticRuntimeManager {
       snapshot: request.snapshot ?? null,
       ...(request.derivedArtifactSnapshotIds ? { derivedArtifactSnapshotIds: request.derivedArtifactSnapshotIds } : {}),
       resolvingProjectIdentity: request.resolvingProjectIdentity
-        ?? (request.resolvingProject ? request.resolvingProject.config_sha256 : null),
+        ?? (request.resolvingProject ? resolvingProjectIdentity(request.resolvingProject) : null),
     });
     const keyId = runtimeKeyId(key);
 
