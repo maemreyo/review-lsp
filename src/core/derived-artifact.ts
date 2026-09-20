@@ -107,13 +107,19 @@ function inside(root: string, path: string): boolean {
   return delta === "" || (!isAbsolute(delta) && delta !== ".." && !delta.startsWith(`..${sep}`));
 }
 
-function candidateRelative(path: string): string {
-  const absolute = resolvePath("/", path);
-  const delta = relative("/", absolute);
-  if (delta === "" || delta === ".." || delta.startsWith(`..${sep}`) || isAbsolute(delta)) {
-    throw new ReviewLspError("DERIVED_ARTIFACT_UNSUPPORTED", `path escapes candidate authority: ${path}`);
+function candidateRelativeJoin(baseRelative: string, requested: string, label: string): string {
+  if (isAbsolute(requested)) {
+    throw new ReviewLspError("DERIVED_ARTIFACT_UNSUPPORTED", `${label} is absolute and escapes candidate authority`);
   }
-  return delta;
+  const combined = normalize(join(baseRelative || ".", requested));
+  if (combined === ""
+    || combined === "."
+    || combined === ".."
+    || combined.startsWith(`..${sep}`)
+    || isAbsolute(combined)) {
+    throw new ReviewLspError("DERIVED_ARTIFACT_UNSUPPORTED", `${label} escapes candidate authority`);
+  }
+  return combined.split(sep).join("/");
 }
 
 async function candidateJson<T>(candidate: CandidateDescriptor, path: string): Promise<{ value: T; sha256: string }> {
@@ -146,9 +152,12 @@ async function admitConfigChain(
       `${configPath} extends an external/non-relative config; the narrow provider only admits candidate-relative extends chains`,
     );
   }
-  const base = resolvePath("/", dirname(configPath), config.value.extends);
-  const withExtension = extname(base) ? base : `${base}.json`;
-  const relativeConfig = candidateRelative(withExtension);
+  const relativeBase = candidateRelativeJoin(
+    dirname(configPath) === "." ? "" : dirname(configPath),
+    config.value.extends,
+    `${configPath} extends target`,
+  );
+  const relativeConfig = extname(relativeBase) ? relativeBase : `${relativeBase}.json`;
   return [...chain, ...(await admitConfigChain(candidate, relativeConfig, seen))];
 }
 
@@ -171,11 +180,15 @@ async function strictRecipe(candidate: CandidateDescriptor, manifestPath: string
 
   const packageRoot = dirname(manifestPath) === "." ? "" : dirname(manifestPath);
   const packageAbsolute = resolvePath("/", packageRoot);
-  const configAbsolute = resolvePath(packageAbsolute, match[1]);
+  const projectConfigPath = candidateRelativeJoin(
+    packageRoot,
+    match[1],
+    `${manifestPath} build config`,
+  );
+  const configAbsolute = resolvePath("/", projectConfigPath);
   if (!inside(packageAbsolute, configAbsolute)) {
     throw new ReviewLspError("DERIVED_ARTIFACT_UNSUPPORTED", `${manifestPath} build config escapes its workspace package`);
   }
-  const projectConfigPath = candidateRelative(configAbsolute);
   const config = await candidateJson<{
     compilerOptions?: { outDir?: unknown; declarationDir?: unknown };
   }>(candidate, projectConfigPath);

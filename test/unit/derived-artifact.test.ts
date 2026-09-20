@@ -56,6 +56,7 @@ async function scenario(options: {
   buildScript?: string;
   outDir?: string;
   source?: string;
+  extendsConfig?: string;
 } = {}): Promise<{
   candidate: CandidateDescriptor;
   snapshot: DependencySnapshotDescriptor;
@@ -82,6 +83,7 @@ async function scenario(options: {
     types: "./dist/index.d.ts",
   }, null, 2)}\n`);
   await writeFile(join(repo, "tsconfig.json"), `${JSON.stringify({
+    ...(options.extendsConfig ? { extends: options.extendsConfig } : {}),
     compilerOptions: {
       target: "ES2022",
       module: "NodeNext",
@@ -270,6 +272,34 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
   it("refuses a derived outDir that escapes its workspace package", async () => {
     const { candidate, snapshot, projection, state } = await scenario({
       outDir: "../escaped-dist",
+    });
+
+    await expect(deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    })).rejects.toThrow(/DERIVED_ARTIFACT_UNSUPPORTED/);
+  }, 120_000);
+
+  it("refuses a build config path that lexically escapes the candidate", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      buildScript: "tsc -p ../outside.json",
+    });
+
+    await expect(deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    })).rejects.toThrow(/DERIVED_ARTIFACT_UNSUPPORTED/);
+  }, 120_000);
+
+  it("refuses a tsconfig extends target that lexically escapes the candidate", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      extendsConfig: "../outside.json",
     });
 
     await expect(deriveWorkspaceArtifact({
