@@ -35,6 +35,22 @@ export interface CandidatePreparationLimits {
   max_total_bytes?: number;
 }
 
+/**
+ * Optional operational timings for release benchmarking. They never participate in candidate
+ * identity or admission and are populated only when a caller provides this object.
+ */
+export interface CandidatePreparationMetrics {
+  retained_lookup_ms?: number;
+  git_enumeration_ms?: number;
+  git_object_read_ms?: number;
+  materialization_ms?: number;
+  integrity_verification_ms?: number;
+}
+
+function elapsedMs(started: bigint): number {
+  return Number(process.hrtime.bigint() - started) / 1_000_000;
+}
+
 interface RawEntry {
   path: string;
   mode: string;
@@ -176,20 +192,25 @@ async function rawEntries(
   repo: string,
   commitOid: string,
   limits: Required<CandidatePreparationLimits>,
+  metrics?: CandidatePreparationMetrics,
 ): Promise<RawEntry[]> {
   // One tree enumeration and one object stream, instead of two `git cat-file` processes per
   // blob. Every rejection rule below is evaluated on the same values as before; the size
   // cross-check gains a third independent observation rather than losing one.
+  const enumerationStarted = process.hrtime.bigint();
   const listing = await git(repo, ["ls-tree", "-rz", "-r", "-l", "--full-tree", commitOid]);
   const listed = parseTreeListing(listing.toString("utf8"), limits);
+  if (metrics) metrics.git_enumeration_ms = elapsedMs(enumerationStarted);
 
   // Identical OIDs are identical bytes, so a repository that stores the same blob at many
   // paths is read once; each path still cross-checks its own declared size against it.
   const requested = [...new Set(listed.map((entry) => entry.oid))];
   const payloads = new Map<string, { headerSize: number; bytes: Buffer }>();
+  const objectReadStarted = process.hrtime.bigint();
   await catFileBatch(repo, requested, ({ oid, headerSize, bytes }) => {
     payloads.set(oid, { headerSize, bytes });
   });
+  if (metrics) metrics.git_object_read_ms = elapsedMs(objectReadStarted);
 
   const result: RawEntry[] = [];
   for (const entry of listed) {
@@ -377,6 +398,7 @@ export async function prepareCandidate(input: {
   commit: string;
   stateDirectory: string;
   limits?: CandidatePreparationLimits;
+  metrics?: CandidatePreparationMetrics;
 }): Promise<CandidateDescriptor> {
   const repo = await realpath(input.repo);
   const gitDirText = (await git(repo, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim();
@@ -395,10 +417,12 @@ export async function prepareCandidate(input: {
     }
   }
   const repositoryIdentity = sha256(canonicalJson({ git_dir: gitDir, object_format: objectFormat }));
+  const retainedLookupStarted = process.hrtime.bigint();
   const retained = await loadRetainedCandidate(input.stateDirectory, repositoryIdentity, commitOid, treeOid, objectFormat, limits);
+  if (input.metrics) input.metrics.retained_lookup_ms = elapsedMs(retainedLookupStarted);
   if (retained) return retained;
 
-  const entries = await rawEntries(repo, commitOid, limits);
+  const entries = await rawEntries(repo, commitOid, limits, input.metrics);
   const manifestEntries: CandidateEntry[] = entries.map((entry) => ({
     path: entry.path,
     mode: entry.mode,
@@ -447,7 +471,9 @@ export async function prepareCandidate(input: {
   await mkdir(join(temporary, "source"), { recursive: true, mode: 0o700 });
 
   try {
+    const materializationStarted = process.hrtime.bigint();
     const writtenManifest = await materialize(join(temporary, "source"), entries);
+    if (input.metrics) input.metrics.materialization_ms = elapsedMs(materializationStarted);
     if (canonicalJson(writtenManifest) !== canonicalJson(manifestEntries)) {
       throw new ReviewLspError("CANDIDATE_INTEGRITY_INVALID", "materialized candidate manifest changed during preparation");
     }
@@ -459,7 +485,9 @@ export async function prepareCandidate(input: {
     };
     await writeFile(join(temporary, "candidate.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, candidateDirectory);
+    const verificationStarted = process.hrtime.bigint();
     await verifyCandidateIntegrity(descriptor);
+    if (input.metrics) input.metrics.integrity_verification_ms = elapsedMs(verificationStarted);
     // Published last: an index entry must never name a candidate that is not fully retained.
     await writeRetainedIndex(input.stateDirectory, repositoryIdentity, commitOid, candidateId);
     return descriptor;

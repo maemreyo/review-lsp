@@ -35,6 +35,7 @@ export {
   verifyProjectionSource,
 } from "./core/projection.js";
 export { candidateDescriptorPath, loadCandidateDescriptor, prepareCandidate, readCandidateFile, removeCandidate, verifyCandidateIntegrity } from "./core/candidate.js";
+export type { CandidatePreparationMetrics } from "./core/candidate.js";
 export { buildEnvironmentManifest } from "./core/environment.js";
 export { containerImageIdFromEnvironment, parseLinuxMountInfo, resolveDockerImageId, runDockerSemanticQuery, verifyLinuxReadOnlyMount } from "./core/container.js";
 export type { DockerSemanticQueryResult } from "./core/container.js";

@@ -56,13 +56,14 @@
     "test:acceptance": "vitest run --project acceptance",
     "test:mcp:stdio": "pnpm build && node test/smoke/mcp-stdio.mjs",
     "test:package": "node test/smoke/package-install.mjs",
+    "test:cache-crash": "pnpm build && node test/smoke/cache-publication-crash.mjs",
     "demo:ab": "pnpm build && node examples/typescript-ab/demo.mjs",
     "benchmark": "pnpm build && node scripts/benchmark.mjs",
     "container:build": "node scripts/container-build.mjs",
     "test:container:linux": "pnpm build && node test/smoke/container-linux.mjs",
     "licenses": "pnpm build && cat dist/review-lsp-licenses.json",
     "prepack": "pnpm build",
-    "check": "pnpm typecheck && pnpm test && pnpm build && node test/smoke/mcp-stdio.mjs && node test/smoke/package-install.mjs"
+    "check": "pnpm typecheck && pnpm test && pnpm build && node test/smoke/mcp-stdio.mjs && node test/smoke/package-install.mjs && node test/smoke/cache-publication-crash.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

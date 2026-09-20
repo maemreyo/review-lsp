@@ -99,6 +99,7 @@ async function exactProjectFixture(options: {
     name: `@fixture/conformance-ts${engineVersion.split(".")[0]}`,
     private: true,
     type: "module",
+    packageManager: "pnpm@10.20.0",
     devDependencies: { typescript: engineVersion },
   }, null, 2) + "\n";
   const tsconfig = JSON.stringify({
@@ -114,8 +115,21 @@ async function exactProjectFixture(options: {
   const valueSource = 'export const value: string = "candidate";\n';
   const mainSource = 'import { value } from "./value";\nexport const result = value;\n';
 
+  const lockfile = [
+    "lockfileVersion: '9.0'",
+    "",
+    "importers:",
+    "",
+    "  .:",
+    "    devDependencies:",
+    "      typescript:",
+    `        specifier: ${engineVersion}`,
+    `        version: ${engineVersion}`,
+    "",
+  ].join("\n");
   for (const base of [repo, referenceRoot]) {
     await writeFile(join(base, "package.json"), packageJson);
+    await writeFile(join(base, "pnpm-lock.yaml"), lockfile);
     await writeFile(join(base, "tsconfig.json"), tsconfig);
     await writeFile(join(base, "src", "value.ts"), valueSource);
     await writeFile(join(base, "src", "main.ts"), mainSource);
@@ -271,6 +285,12 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       expect(admittedHover.semantic_toolchain.candidate_engine).not.toBeNull();
       expect(admittedHover.semantic_toolchain.execution_profile.enforced).toBe(true);
       expect(admittedHover.result).toEqual(referenceHover.value);
+
+      // The LSP server watchdog probes initialize.processId every three seconds. Sandboxed
+      // candidate engines must survive beyond that boundary without cross-sandbox PID probes.
+      await new Promise((resolveWait) => setTimeout(resolveWait, 3_250));
+      const repeatedHover = await admitted.hover({ path: "src/main.ts", line: 1, character: position });
+      expect(repeatedHover.result).toEqual(referenceHover.value);
 
       const [admittedDefinition, referenceDefinition] = await Promise.all([
         admitted.definition({ path: "src/main.ts", line: 1, character: position }),

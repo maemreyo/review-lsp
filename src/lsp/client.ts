@@ -56,6 +56,7 @@ export class StdioLspDriver {
   private closed = false;
   private exited = false;
   private stderrTail = "";
+  private serverLogTail = "";
   private serverInfo: unknown;
   private capabilities: InitializeResult["capabilities"] | undefined;
 
@@ -108,7 +109,12 @@ export class StdioLspDriver {
     this.connection.listen();
     const rootUri = URI.file(this.rootDir).toString();
     const initialized = await this.request<InitializeResult>(InitializeRequest.method, {
-      processId: process.pid,
+      // Sandboxed candidate engines cannot reliably probe the host client PID with
+      // `kill(pid, 0)`. vscode-languageserver performs that watchdog every three seconds and
+      // treats an EPERM as a dead client, exiting an otherwise healthy server. Review-LSP owns
+      // this child lifecycle explicitly, so an admitted sandboxed engine declares the client
+      // PID unknown instead of granting a cross-sandbox process probe.
+      processId: this.launch.projectEngineAdmitted ? null : process.pid,
       clientInfo: { name: "review-lsp", version: "0.0.0" },
       rootPath: this.rootDir,
       rootUri,
@@ -215,7 +221,18 @@ export class StdioLspDriver {
     this.connection.onRequest("client/registerCapability", () => null);
     this.connection.onRequest("client/unregisterCapability", () => null);
     this.connection.onRequest("window/workDoneProgress/create", () => null);
-    this.connection.onNotification("window/logMessage", () => undefined);
+    this.connection.onNotification("window/logMessage", (message: unknown) => {
+      const text = typeof message === "object" && message !== null && "message" in message
+        ? String((message as { message?: unknown }).message ?? "")
+        : String(message ?? "");
+      if (text) this.serverLogTail = `${this.serverLogTail}${text}\n`.slice(-8_192);
+    });
+    this.connection.onNotification("window/showMessage", (message: unknown) => {
+      const text = typeof message === "object" && message !== null && "message" in message
+        ? String((message as { message?: unknown }).message ?? "")
+        : String(message ?? "");
+      if (text) this.serverLogTail = `${this.serverLogTail}${text}\n`.slice(-8_192);
+    });
     this.connection.onNotification("typescript-language-server/typescriptVersion", () => undefined);
 
     this.child.on("error", (error) => {
@@ -231,7 +248,19 @@ export class StdioLspDriver {
   }
 
   private async request<T>(method: string, params?: unknown, timeoutMs = this.requestTimeoutMs): Promise<RequestOutcome<T>> {
-    if (this.closed) throw new ReviewLspError("LSP_PROTOCOL_ERROR", "language server session is closed");
+    if (this.closed) {
+      const exit = this.child.exitCode !== null
+        ? ` exit_code=${this.child.exitCode}`
+        : this.child.signalCode
+          ? ` signal=${this.child.signalCode}`
+          : "";
+      const stderr = this.stderrTail.trim();
+      const serverLog = this.serverLogTail.trim();
+      throw new ReviewLspError(
+        "LSP_PROTOCOL_ERROR",
+        `language server session is closed${exit}${stderr ? `; server stderr: ${stderr}` : ""}${serverLog ? `; server log: ${serverLog}` : ""}`,
+      );
+    }
     const started = performance.now();
     let timer: NodeJS.Timeout | undefined;
     try {
