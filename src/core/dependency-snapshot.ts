@@ -8,6 +8,7 @@ import { canonicalJson, contentId } from "./canonical.js";
 import { acquisitionStoreDirectory, loadAcquiredDependencyTree, readAcquiredDependencyTreeDescriptor } from "./dependency-acquisition.js";
 import { scanDependencyTree } from "./dependency-tree.js";
 import { ReviewLspError } from "./errors.js";
+import { treeMetadataFingerprint } from "./tree-metadata.js";
 import type {
   CandidateDescriptor,
   DependencyInputSet,
@@ -31,6 +32,7 @@ interface VerifiedSnapshotLease {
   root_dev: number;
   root_ino: number;
   root_mode: number;
+  tree_metadata_sha256: string;
 }
 
 /**
@@ -82,6 +84,7 @@ async function snapshotLeaseFingerprint(descriptor: DependencySnapshotDescriptor
     root_dev: rootInfo.dev,
     root_ino: rootInfo.ino,
     root_mode: rootInfo.mode,
+    tree_metadata_sha256: await treeMetadataFingerprint(descriptor.dependency_root),
   };
 }
 
@@ -90,7 +93,8 @@ function sameSnapshotLease(a: VerifiedSnapshotLease, b: VerifiedSnapshotLease): 
     && a.root_realpath === b.root_realpath
     && a.root_dev === b.root_dev
     && a.root_ino === b.root_ino
-    && a.root_mode === b.root_mode;
+    && a.root_mode === b.root_mode
+    && a.tree_metadata_sha256 === b.tree_metadata_sha256;
 }
 
 export function dependencySnapshotDirectory(stateDirectory: string, snapshotId: string): string {

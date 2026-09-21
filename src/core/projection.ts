@@ -8,6 +8,7 @@ import { runEntryPointGate } from "./entry-points.js";
 import { verifyDerivedWorkspaceArtifact } from "./derived-artifact.js";
 import { verifyDependencySnapshot } from "./dependency-snapshot.js";
 import { ReviewLspError } from "./errors.js";
+import { treeMetadataFingerprint } from "./tree-metadata.js";
 import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
@@ -38,6 +39,7 @@ interface VerifiedProjectionLease {
   execution_dev: number;
   execution_ino: number;
   execution_mode: number;
+  tree_metadata_sha256: string;
 }
 
 const verifiedProjectionLeases = new Map<string, VerifiedProjectionLease>();
@@ -67,6 +69,7 @@ async function projectionLeaseFingerprint(
     execution_dev: executionInfo.dev,
     execution_ino: executionInfo.ino,
     execution_mode: executionInfo.mode,
+    tree_metadata_sha256: await treeMetadataFingerprint(projection.execution_root),
   };
 }
 
@@ -75,7 +78,8 @@ function sameProjectionLease(a: VerifiedProjectionLease, b: VerifiedProjectionLe
     && a.execution_realpath === b.execution_realpath
     && a.execution_dev === b.execution_dev
     && a.execution_ino === b.execution_ino
-    && a.execution_mode === b.execution_mode;
+    && a.execution_mode === b.execution_mode
+    && a.tree_metadata_sha256 === b.tree_metadata_sha256;
 }
 
 export function projectionDirectory(stateDirectory: string, projectionId: string): string {

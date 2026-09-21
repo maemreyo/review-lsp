@@ -8,6 +8,7 @@ import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { scanDependencyTree } from "./dependency-tree.js";
 import { admitEngineArtifact, buildMacSandboxPolicy, resolveExecutionProfile } from "./engine-isolation.js";
 import { ReviewLspError } from "./errors.js";
+import { treeMetadataFingerprint } from "./tree-metadata.js";
 import type {
   AdmittedEngineArtifact,
   CandidateDescriptor,
@@ -27,6 +28,7 @@ interface VerifiedDerivedLease {
   output_dev: number;
   output_ino: number;
   output_mode: number;
+  tree_metadata_sha256: string;
 }
 
 const verifiedDerivedLeases = new Map<string, VerifiedDerivedLease>();
@@ -56,6 +58,7 @@ async function derivedLeaseFingerprint(
     output_dev: outputInfo.dev,
     output_ino: outputInfo.ino,
     output_mode: outputInfo.mode,
+    tree_metadata_sha256: await treeMetadataFingerprint(artifact.output_root),
   };
 }
 
@@ -64,7 +67,8 @@ function sameDerivedLease(a: VerifiedDerivedLease, b: VerifiedDerivedLease): boo
     && a.output_realpath === b.output_realpath
     && a.output_dev === b.output_dev
     && a.output_ino === b.output_ino
-    && a.output_mode === b.output_mode;
+    && a.output_mode === b.output_mode
+    && a.tree_metadata_sha256 === b.tree_metadata_sha256;
 }
 
 function compilerArgvBinding(projectConfigPath: string): string[] {

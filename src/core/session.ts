@@ -7,6 +7,7 @@ import { URI } from "vscode-uri";
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { readCandidateFile, verifyCandidateIntegrity } from "./candidate.js";
 import { buildEnvironmentManifest } from "./environment.js";
+import { verifyDependencySnapshot } from "./dependency-snapshot.js";
 import { ReviewLspError } from "./errors.js";
 import { assertCoordinateExpectation, buildCoordinateContext } from "./coordinate.js";
 import { classifyProjectionUri, verifyProjectionDescriptor } from "./projection.js";
@@ -381,6 +382,18 @@ export class SemanticSession {
     await this.driver.shutdown();
   }
 
+  private async verifySemanticEnvironment(): Promise<void> {
+    if (this.projection) {
+      await verifyProjectionDescriptor(this.projection, {
+        candidate: this.candidate,
+        snapshot: this.snapshot,
+        stateDirectory: this.stateDirectory,
+      });
+      return;
+    }
+    if (this.snapshot) await verifyDependencySnapshot(this.snapshot);
+  }
+
   private async query(
     operation: "hover" | "definition",
     input: SemanticQueryInput,
@@ -392,6 +405,7 @@ export class SemanticSession {
 
     await verifyCandidateIntegrity(this.candidate);
     await verifyTypeScriptProfile(this.profile);
+    await this.verifySemanticEnvironment();
     // The server sees the projection path; the receipt binds the candidate document.
     const absolute = this.projection
       ? admittedProjectionPath(this.projection, this.candidate, input.path)
@@ -513,6 +527,7 @@ export class SemanticSession {
 
     await verifyCandidateIntegrity(this.candidate);
     await verifyTypeScriptProfile(this.profile);
+    await this.verifySemanticEnvironment();
     const stableResult = result ?? null;
     const resultBytes = Buffer.byteLength(canonicalJson(stableResult), "utf8");
     if (resultBytes > this.profile.result_limit_bytes) {

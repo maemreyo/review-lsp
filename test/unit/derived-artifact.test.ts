@@ -223,6 +223,33 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
     expect(withDerived.entry_point_gate.findings).toHaveLength(0);
   }, 120_000);
 
+  it("invalidates a verified derived-artifact lease when emitted bytes change under a sealed root", async () => {
+    const { candidate, snapshot, projection, state } = await scenario();
+    const artifact = await deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    });
+    await verifyDerivedWorkspaceArtifact(artifact, {
+      candidate,
+      snapshot,
+      stateDirectory: state,
+    });
+
+    const target = join(artifact.output_root, "index.d.ts");
+    await chmod(target, 0o600);
+    await writeFile(target, "export declare const answer: string;\n");
+    await chmod(target, 0o400);
+
+    await expect(verifyDerivedWorkspaceArtifact(artifact, {
+      candidate,
+      snapshot,
+      stateDirectory: state,
+    })).rejects.toThrow(/DERIVED_ARTIFACT_INVALID/);
+  }, 120_000);
+
   it("rejects a persisted descriptor whose mount provenance was mutated", async () => {
     const { candidate, snapshot, projection, state } = await scenario();
     const artifact = await deriveWorkspaceArtifact({

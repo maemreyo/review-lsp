@@ -11,6 +11,7 @@ import {
   classifyProjectionUri,
   projectionDocumentUri,
   removeProjection,
+  verifyProjectionDescriptor,
   verifyProjectionSource,
 } from "../../src/core/projection.js";
 import type { CandidateDescriptor, ProjectionDescriptor } from "../../src/core/types.js";
@@ -103,6 +104,22 @@ describe("semantic execution projection", () => {
     await writeFile(target, '{"name":"tampered"}\n');
 
     await expect(verifyProjectionSource(projection, candidate)).rejects.toThrow(/PROJECTION_INVALID/);
+  });
+
+  it("invalidates a verified projection lease when a child file changes but the root stays sealed", async () => {
+    const { candidate, projection, state } = await projected();
+    await verifyProjectionDescriptor(projection, { candidate, snapshot: null, stateDirectory: state });
+
+    const target = join(projection.execution_root, "package.json");
+    await chmod(target, 0o600);
+    await writeFile(target, '{"name":"tampered"}\n');
+    await chmod(target, 0o400);
+
+    await expect(verifyProjectionDescriptor(projection, {
+      candidate,
+      snapshot: null,
+      stateDirectory: state,
+    })).rejects.toThrow(/PROJECTION_INVALID/);
   });
 
   it("rejects a cached descriptor whose execution root was forged", async () => {

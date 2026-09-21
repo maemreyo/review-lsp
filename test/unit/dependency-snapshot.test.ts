@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
+import { contentId } from "../../src/core/canonical.js";
 import { acquireDependencies } from "../../src/core/dependency-acquisition.js";
 import { deriveDependencyInputs } from "../../src/core/dependency-inputs.js";
 import { scanDependencyTree } from "../../src/core/dependency-tree.js";
@@ -29,6 +30,45 @@ afterEach(async () => {
   }
 });
 
+async function syntheticSnapshot(): Promise<DependencySnapshotDescriptor> {
+  const dependencyRoot = await mkdtemp(join(tmpdir(), "review-lsp-snapshot-lease-"));
+  roots.push(dependencyRoot);
+  const target = join(dependencyRoot, "index.js");
+  await writeFile(target, "module.exports = 1;\n");
+  const scan = await scanDependencyTree(dependencyRoot);
+  const identity = {
+    schema_version: "review-lsp.dependency-snapshot.v1" as const,
+    ecosystem: "node" as const,
+    package_manager: "pnpm" as const,
+    package_manager_version: "10.20.0",
+    platform: process.platform,
+    arch: process.arch,
+    input_set_id: "depin_lease_regression",
+    network_policy: "OFFLINE" as const,
+    script_policy: "IGNORE_SCRIPTS" as const,
+    lockfile_policy: "FROZEN" as const,
+    dependency_graph: "INCLUDES_DEV" as const,
+    tree_manifest_sha256: scan.tree_manifest_sha256,
+  };
+  await chmod(target, 0o444);
+  await chmod(dependencyRoot, 0o555);
+  return {
+    ...identity,
+    snapshot_id: contentId("depsnap", identity),
+    input_manifest: [],
+    lockfile_binding: { path: "pnpm-lock.yaml", sha256: "0".repeat(64), byte_count: 1 },
+    workspace_binding: null,
+    patch_binding: [],
+    config_binding: {},
+    dependency_root: dependencyRoot,
+    file_count: scan.file_count,
+    symlink_count: scan.symlink_count,
+    total_bytes: scan.total_bytes,
+    materialization_method: "test",
+    created_at: new Date().toISOString(),
+  };
+}
+
 async function scenario(): Promise<{ candidate: CandidateDescriptor; inputs: DependencyInputSet; state: string }> {
   const root = await mkdtemp(join(tmpdir(), "review-lsp-snapshot-"));
   roots.push(root);
@@ -40,6 +80,18 @@ async function scenario(): Promise<{ candidate: CandidateDescriptor; inputs: Dep
 }
 
 describe("dependency snapshot publication", () => {
+  it("invalidates a verified lease when descendant bytes change without changing the root identity", async () => {
+    const snapshot = await syntheticSnapshot();
+    await verifyDependencySnapshot(snapshot);
+
+    const target = join(snapshot.dependency_root, "index.js");
+    await chmod(target, 0o644);
+    await writeFile(target, "module.exports = 2;\n");
+    await chmod(target, 0o444);
+
+    await expect(verifyDependencySnapshot(snapshot)).rejects.toThrow(/DEPENDENCY_SNAPSHOT_INVALID/);
+  });
+
   it("refuses to publish when the store cannot satisfy the lockfile", async () => {
     const { candidate, inputs, state } = await scenario();
     // Publication is strictly offline. Reaching the network here would hide an acquisition
