@@ -40,30 +40,52 @@ async function seedCorepackCache(state: string): Promise<boolean> {
   // GitHub's pnpm/setup action installs the exact requested pnpm package under PNPM_HOME but
   // does not populate Corepack's cache. Reuse those already-installed bytes so this offline
   // gate is hermetic on fresh runners rather than depending on a developer's prior cache.
-  const pnpmShim = process.env.PNPM_HOME ? join(process.env.PNPM_HOME, "pnpm") : null;
-  if (pnpmShim) {
-    try {
-      const cli = await realpath(pnpmShim);
-      const packageRoot = dirname(dirname(cli));
-      const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
-        name?: unknown;
-        version?: unknown;
-      };
-      if (manifest.name === "pnpm" && manifest.version === "10.20.0") {
-        const cachedRoot = join(target, "v1", "pnpm", "10.20.0");
-        await cp(packageRoot, cachedRoot, { recursive: true });
-        // Corepack uses this marker to recognize an already-installed package-manager cache.
-        // The source bytes came from pnpm/action-setup and the exact package name/version was
-        // checked above; this test-only marker is not dependency-integrity evidence.
-        await writeFile(join(cachedRoot, ".corepack"), JSON.stringify({
-          locator: { name: "pnpm", reference: "10.20.0" },
-          bin: { pnpm: "bin/pnpm.cjs", pnpx: "bin/pnpx.cjs" },
-          hash: "sha512.review-lsp-test-fixture",
-        }));
-        return true;
+  const pnpmHome = process.env.PNPM_HOME;
+  if (pnpmHome) {
+    const starts = [
+      await realpath(join(pnpmHome, "pnpm")).catch(() => join(pnpmHome, "pnpm")),
+      await realpath(join(dirname(pnpmHome), "pnpm")).catch(() => join(dirname(pnpmHome), "pnpm")),
+    ];
+    let packageRoot: string | null = null;
+    for (const start of starts) {
+      let current = start.endsWith("pnpm") && start.includes(`${join("node_modules", ".bin")}`)
+        ? dirname(start)
+        : start;
+      for (let depth = 0; depth < 8; depth += 1) {
+        try {
+          const manifest = JSON.parse(await readFile(join(current, "package.json"), "utf8")) as {
+            name?: unknown;
+            version?: unknown;
+          };
+          if (manifest.name === "pnpm" && manifest.version === "10.20.0") {
+            packageRoot = current;
+            break;
+          }
+        } catch {
+          // Keep walking: action-setup may point the shim into a pnpm virtual-store package.
+        }
+        const parent = dirname(current);
+        if (parent === current) break;
+        current = parent;
       }
-    } catch {
-      // Fall through to ordinary Corepack cache discovery.
+      if (packageRoot) break;
+    }
+
+    if (packageRoot) {
+      const cachedRoot = join(target, "v1", "pnpm", "10.20.0");
+      await cp(packageRoot, cachedRoot, { recursive: true, verbatimSymlinks: true });
+      // Corepack uses this marker to recognize an already-installed package-manager cache.
+      // The source bytes came from pnpm/action-setup and the exact package name/version was
+      // checked above; this test-only marker is not dependency-integrity evidence.
+      await writeFile(join(cachedRoot, ".corepack"), JSON.stringify({
+        locator: { name: "pnpm", reference: "10.20.0" },
+        bin: { pnpm: "bin/pnpm.cjs", pnpx: "bin/pnpx.cjs" },
+        hash: "sha512.review-lsp-test-fixture",
+      }));
+      return true;
+    }
+    if (process.env.CI === "true") {
+      process.stderr.write(`unable to locate pnpm@10.20.0 package from PNPM_HOME=${pnpmHome}\n`);
     }
   }
 
