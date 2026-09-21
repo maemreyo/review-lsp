@@ -568,13 +568,11 @@ export async function deriveWorkspaceArtifact(input: {
       snapshot: input.snapshot,
       stateDirectory: input.stateDirectory,
     });
-    if (!existing.strong_admission) {
-      throw new ReviewLspError(
-        "DERIVED_ARTIFACT_INVALID",
-        `derived cache index ${derivationKey} points to an advisory artifact`,
-      );
-    }
-    return existing;
+    if (existing.strong_admission) return existing;
+    // Advisory artifacts are retained for audit/debug evidence but never become cache
+    // authority. Remove any legacy/advisory index and retry the derivation so a transient
+    // timeout/crash cannot poison every later semantic preparation for these exact inputs.
+    await rm(indexPath, { force: true });
   } catch (error) {
     if (error instanceof ReviewLspError) throw error;
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -716,18 +714,22 @@ export async function deriveWorkspaceArtifact(input: {
         snapshot: input.snapshot,
         stateDirectory: input.stateDirectory,
       });
+      if (existing.strong_admission) {
+        await publishDerivationIndex(indexPath, {
+          schema_version: "review-lsp.derived-index.v1",
+          derivation_key: derivationKey,
+          artifact_id: existing.artifact_id,
+        });
+      }
+      return existing;
+    }
+    if (descriptor.strong_admission) {
       await publishDerivationIndex(indexPath, {
         schema_version: "review-lsp.derived-index.v1",
         derivation_key: derivationKey,
-        artifact_id: existing.artifact_id,
+        artifact_id: descriptor.artifact_id,
       });
-      return existing;
     }
-    await publishDerivationIndex(indexPath, {
-      schema_version: "review-lsp.derived-index.v1",
-      derivation_key: derivationKey,
-      artifact_id: descriptor.artifact_id,
-    });
     return descriptor;
   } catch (error) {
     await makeTreeOwnerWritable(stagingRoot).catch(() => undefined);

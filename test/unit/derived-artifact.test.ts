@@ -322,6 +322,21 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
     expect(artifact.diagnostic_error_count).toBeNull();
     expect(artifact.strong_admission).toBe(false);
     expect(artifact.limitation).toMatch(/diagnostic error count could not be determined/);
+    expect(await readdir(join(state, "derived", "by-derivation"))).toEqual([]);
+
+    // Advisory/debug evidence is retained, but it must not become cache authority. A later
+    // preparation retries and remains PARTIAL/advisory instead of failing on a poisoned index.
+    const repeated = await deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+    });
+    expect(repeated.artifact_id).toBe(artifact.artifact_id);
+    expect(repeated.strong_admission).toBe(false);
+    expect(await readdir(join(state, "derived", "by-derivation"))).toEqual([]);
+
     await expect(buildProjection({
       candidate,
       snapshot,
