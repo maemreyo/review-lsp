@@ -101,6 +101,13 @@ export async function buildEnvironmentManifest(
     }
   }
 
+  // A snapshot is only semantic authority when the answering server is rooted in the
+  // execution projection that exposes it. Binding snapshot metadata while executing against
+  // source-only candidate bytes would overstate the environment.
+  if (snapshot && !projection) {
+    limitations.push("dependency snapshot is admitted but no execution projection is bound");
+  }
+
   // A snapshot can be admitted while the projection is still semantically incomplete: a
   // workspace package whose declared type entry point is absent resolves to nothing, and
   // every query that depends on it degrades with no other signal. That must not be VERIFIED.

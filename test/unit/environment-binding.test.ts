@@ -8,6 +8,7 @@ import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { buildEnvironmentManifest } from "../../src/core/environment.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { buildProjection, removeProjection } from "../../src/core/projection.js";
+import { SemanticSession } from "../../src/core/session.js";
 import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
@@ -72,7 +73,7 @@ async function scenario(workspaceTypesTarget?: string) {
   });
   projections.push(projection);
   profile ??= await createTypeScriptProfile();
-  return { candidate, projection, profile };
+  return { candidate, projection, profile, state };
 }
 
 describe("environment binding", () => {
@@ -82,6 +83,27 @@ describe("environment binding", () => {
 
     expect(environment.dependency_snapshot.state).toBe("MISSING");
     expect(environment.binding).toBe("PARTIAL");
+  });
+
+  it("keeps a snapshot-only environment below VERIFIED because the server has no dependency projection", async () => {
+    const { candidate, profile: admitted } = await scenario();
+    const environment = await buildEnvironmentManifest(candidate, admitted, { snapshot: snapshotStub() });
+
+    expect(environment.dependency_snapshot.state).toBe("BOUND");
+    expect(environment.projection).toBeNull();
+    expect(environment.binding).toBe("PARTIAL");
+    expect(environment.limitations).toContain("dependency snapshot is admitted but no execution projection is bound");
+  });
+
+  it("refuses a semantic session that binds dependency evidence without executing through a projection", async () => {
+    const { candidate, profile: admitted, state } = await scenario();
+
+    await expect(SemanticSession.create({
+      candidate,
+      profile: admitted,
+      stateDirectory: state,
+      snapshot: snapshotStub(),
+    })).rejects.toThrow(/PROJECTION_INVALID.*requires a bound execution projection/);
   });
 
   it("binds an admitted snapshot and reaches VERIFIED when the projection is complete", async () => {

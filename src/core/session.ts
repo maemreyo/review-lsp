@@ -248,6 +248,12 @@ export class SemanticSession {
     const projection = input.projection ?? null;
     const snapshot = input.snapshot ?? null;
     const resolvingProject = input.resolvingProject ?? null;
+    if (snapshot && !projection) {
+      throw new ReviewLspError(
+        "PROJECTION_INVALID",
+        "dependency snapshot semantic execution requires a bound execution projection",
+      );
+    }
     if (projection) {
       await verifyProjectionDescriptor(projection, {
         candidate: input.candidate,
