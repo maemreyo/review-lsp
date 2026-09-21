@@ -1,6 +1,6 @@
-import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -36,6 +36,28 @@ async function scenario(shape: PnpmFixtureShape = {}): Promise<{ candidate: Cand
  */
 async function seedCorepackCache(state: string): Promise<boolean> {
   const target = join(state, "dependency-acquisition", "corepack");
+
+  // GitHub's pnpm/setup action installs the exact requested pnpm package under PNPM_HOME but
+  // does not populate Corepack's cache. Reuse those already-installed bytes so this offline
+  // gate is hermetic on fresh runners rather than depending on a developer's prior cache.
+  const pnpmShim = process.env.PNPM_HOME ? join(process.env.PNPM_HOME, "pnpm") : null;
+  if (pnpmShim) {
+    try {
+      const cli = await realpath(pnpmShim);
+      const packageRoot = dirname(dirname(cli));
+      const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (manifest.name === "pnpm" && manifest.version === "10.20.0") {
+        await cp(packageRoot, join(target, "v1", "pnpm", "10.20.0"), { recursive: true });
+        return true;
+      }
+    } catch {
+      // Fall through to ordinary Corepack cache discovery.
+    }
+  }
+
   for (const source of [
     join(homedir(), ".cache", "node", "corepack"),
     join(homedir(), "Library", "Caches", "node", "corepack"),
