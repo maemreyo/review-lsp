@@ -67,7 +67,14 @@ try {
 
   const installedRoot = join(consumer, "node_modules", "review-lsp");
   const installedCli = join(installedRoot, "dist", "review-lsp.mjs");
-  const artifactInfo = JSON.parse((await run(process.execPath, [installedCli, "artifact-info"], { cwd: consumer })).stdout);
+  const installedBin = join(consumer, "node_modules", ".bin", "review-lsp");
+  const artifactInfoFromBundle = JSON.parse(
+    (await run(process.execPath, [installedCli, "artifact-info"], { cwd: consumer })).stdout,
+  );
+  const artifactInfo = JSON.parse((await run(installedBin, ["artifact-info"], { cwd: consumer })).stdout);
+  if (JSON.stringify(artifactInfo) !== JSON.stringify(artifactInfoFromBundle)) {
+    throw new Error("installed review-lsp bin did not expose the same artifact identity as the provider bundle");
+  }
   if (artifactInfo.package_version !== expectedPackageVersion) {
     throw new Error(`unexpected installed package version: ${artifactInfo.package_version}`);
   }

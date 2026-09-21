@@ -28,7 +28,7 @@
     }
   },
   "bin": {
-    "review-lsp": "./dist/review-lsp.mjs"
+    "review-lsp": "dist/review-lsp.mjs"
   },
   "files": [
     "dist/src",
