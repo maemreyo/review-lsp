@@ -12,6 +12,8 @@ const scratch = await mkdtemp(join(tmpdir(), "review-lsp-package-"));
 const consumer = join(scratch, "consumer");
 const fixture = join(scratch, "fixture");
 const state = join(scratch, "state");
+const sourcePackage = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+const expectedPackageVersion = sourcePackage.version;
 
 async function run(command, args, options = {}) {
   const { stdout, stderr } = await execFile(command, args, {
@@ -66,7 +68,7 @@ try {
   const installedRoot = join(consumer, "node_modules", "review-lsp");
   const installedCli = join(installedRoot, "dist", "review-lsp.mjs");
   const artifactInfo = JSON.parse((await run(process.execPath, [installedCli, "artifact-info"], { cwd: consumer })).stdout);
-  if (artifactInfo.package_version !== "0.1.0-alpha.1") {
+  if (artifactInfo.package_version !== expectedPackageVersion) {
     throw new Error(`unexpected installed package version: ${artifactInfo.package_version}`);
   }
   if (artifactInfo.identity_scope !== "provider_bundle_server_bundle_and_package_json") {

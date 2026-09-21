@@ -10,14 +10,14 @@
 
 Review-LSP runs LSP semantic queries against an exact Git candidate, not whichever checkout happens to be live. Each successful query returns a content-addressed receipt binding the candidate, document, semantic toolchain, environment, request, result, and isolation mode.
 
-Current public release: **0.1.0-alpha.1**.
+Current public release: **0.1.0-alpha.2**.
 
 ```bash
 npm install review-lsp@alpha
 npx review-lsp artifact-info
 ```
 
-> The registry currently exposes both `alpha` and `latest` as `0.1.0-alpha.1`. Use `@alpha` explicitly while Review-LSP is prerelease software.
+> Use the explicit `@alpha` dist-tag while Review-LSP is prerelease software.
 
 ## Why Review-LSP?
 
@@ -82,7 +82,11 @@ The current TypeScript profile includes:
   - `review_lsp_definition`;
 - native `TRUSTED_LOCAL` execution;
 - Linux `CONTAINER_READ_ONLY` execution;
-- content-addressed package/provider artifact identity.
+- content-addressed package/provider artifact identity;
+- offline pnpm dependency snapshots and sealed semantic projections;
+- workspace entry-point completeness plus constrained TypeScript declaration derivation;
+- project-aligned candidate TypeScript engines, including TypeScript 7 native LSP, when an enforced isolation profile is available;
+- persistent candidate/project semantic runtime reuse with exact-keyed provenance.
 
 ## Quickstart
 
@@ -151,20 +155,20 @@ The inner process verifies that `/candidate` is an explicit Linux read-only moun
 
 ## Release evidence
 
-`0.1.0-alpha.1` was verified with:
+`0.1.0-alpha.2` is release-gated by:
 
-- macOS 14 / Node 22.19.0 — PASS;
-- macOS 14 / Node 24.19.0 — PASS;
-- Ubuntu 24.04 / Node 22.19.0 — PASS;
-- Ubuntu 24.04 / Node 24.19.0 — PASS;
-- Linux Docker isolation smoke — PASS;
-- clean public-registry install + A/B semantic smoke — PASS.
+- local macOS arm64 / Node 24.19.0 `pnpm check`, package smoke and P7 benchmark — PASS;
+- candidate-bound independent review plus clean successor review for the final blocker — PASS;
+- macOS 14 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
+- Ubuntu 24.04 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
+- dedicated Linux Docker isolation job — required PASS before publish;
+- public-registry clean-install smoke — run after publication and recorded separately.
 
-See [compatibility evidence](docs/compatibility/0.1.0-alpha.1.md) and the [release notes](docs/releases/0.1.0-alpha.1.md).
+See [compatibility evidence](docs/compatibility/0.1.0-alpha.2.md) and the [release notes](docs/releases/0.1.0-alpha.2.md).
 
 ## Current limitations
 
-- Dependency snapshots are not admitted yet; dependency-bearing projects remain `PARTIAL`.
+- The dependency provider is intentionally narrow: pnpm 10 lockfile projects and admitted workspace/config syntax only; unsupported package-manager/workspace/build surfaces remain `PARTIAL` or `UNSUPPORTED`.
 - TypeScript only for this alpha.
 - Dirty-worktree candidates are not supported.
 - References, symbols, diagnostics, and additional semantic operations are deferred.

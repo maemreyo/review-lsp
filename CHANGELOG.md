@@ -6,14 +6,31 @@ The project is currently prerelease software. Until 1.0, minor versions may incl
 
 ## Unreleased
 
-### Security
+## 0.1.0-alpha.2 — 2026-09-21
 
-- Updated Vitest development tooling to 4.1.11, the first patched 4.x release for GHSA-82fw-gwwq-j7x9 / CVE-2026-84373. This is a repository-development dependency, not a runtime dependency installed by Review-LSP consumers.
+### Added
+
+- Offline, content-addressed pnpm dependency acquisition/snapshots with sealed-tree verification and projection-based semantic execution.
+- Workspace semantic entry-point completeness gates plus constrained derived TypeScript declaration artifacts.
+- Candidate-selected TypeScript engine admission, including TypeScript 7 native-LSP runtime identity and exact-project alignment evidence.
+- Persistent semantic runtime reuse keyed by candidate, snapshot, projection, resolving project, profile and isolation identities.
+- Coordinate targeting context/guards and richer definition provenance for candidate, dependency, derived-artifact and toolchain targets.
+- Realistic P7 benchmark reporting candidate ingestion, dependency materialization/verification, first/warm queries and concurrent reuse.
+
+### Security / correctness
+
+- Fail closed on unsupported pnpm workspace YAML/glob and package `exports` surfaces instead of silently shrinking semantic authority.
+- Invalidate process-local verified leases when descendant filesystem metadata drifts, forcing full content re-verification before further VERIFIED answers.
+- Prevent advisory/crashed/timed-out derived artifacts from becoming cache authority.
+- Require snapshot-backed semantic sessions to execute through the bound dependency projection; snapshot-only manifests remain PARTIAL.
+- Bind TypeScript 7 platform-native runtime bytes into engine identity and avoid sandboxed LSP client-PID watchdog exits.
+- Add bounded compiler-timeout, cache-publication crash, tamper, routing, concurrent-runtime and semantic differential regression gates.
+- Updated Vitest development tooling to 4.1.11, the first patched 4.x release for GHSA-82fw-gwwq-j7x9 / CVE-2026-84373.
 
 ### Maintenance
 
-- Updated Zod from 4.6.1 to 4.6.5 after the full compatibility/container CI matrix passed.
-- Dependabot now leaves semver-major npm and GitHub Actions upgrades for explicit review while continuing to surface patch/minor and security updates.
+- Updated Zod from 4.6.1 to 4.6.5.
+- Dependabot leaves semver-major npm and GitHub Actions upgrades for explicit review while continuing to surface patch/minor and security updates.
 
 ## 0.1.0-alpha.1 — 2026-09-18
 
