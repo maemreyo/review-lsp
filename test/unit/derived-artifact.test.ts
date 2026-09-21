@@ -331,6 +331,45 @@ describe.runIf(process.platform === "darwin")("derived workspace artifact admiss
     })).rejects.toThrow(/advisory only/);
   }, 120_000);
 
+  it("keeps a compiler timeout below strong admission without waiting for the production timeout", async () => {
+    const { candidate, snapshot, projection, state } = await scenario({
+      compilerSource: "setInterval(() => {}, 1_000);\n",
+    });
+
+    const artifact = await deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+      compilerTimeoutMs: 75,
+    });
+
+    expect(artifact.compiler_exit_code).toBe(-1);
+    expect(artifact.diagnostic_error_count).toBeNull();
+    expect(artifact.strong_admission).toBe(false);
+    expect(artifact.limitation).toMatch(/compiler timed out/);
+    await expect(buildProjection({
+      candidate,
+      snapshot,
+      stateDirectory: state,
+      derivedArtifacts: [artifact],
+      workspaceManifests: ["package.json"],
+    })).rejects.toThrow(/advisory only/);
+  }, 120_000);
+
+  it("rejects an invalid compiler timeout before executing candidate compiler bytes", async () => {
+    const { candidate, snapshot, projection, state } = await scenario();
+    await expect(deriveWorkspaceArtifact({
+      candidate,
+      snapshot,
+      projection,
+      manifestPath: "package.json",
+      stateDirectory: state,
+      compilerTimeoutMs: 0,
+    })).rejects.toThrow(/compiler timeout must be a positive safe integer/);
+  }, 120_000);
+
   it("refuses custom build recipes instead of executing candidate scripts", async () => {
     const { candidate, snapshot, projection, state } = await scenario({
       buildScript: "node custom-build.js",

@@ -385,6 +385,7 @@ async function runCompiler(input: {
   policy: string;
   home: string;
   tmp: string;
+  timeoutMs: number;
 }): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   const args = [
     "-p",
@@ -409,6 +410,7 @@ async function runCompiler(input: {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     const collect = (current: string, chunk: Buffer): string =>
       current.length >= OUTPUT_LIMIT_BYTES
         ? current
@@ -417,10 +419,9 @@ async function runCompiler(input: {
     child.stderr.on("data", (chunk: Buffer) => { stderr = collect(stderr, chunk); });
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
+      timedOut = true;
       child.kill("SIGKILL");
-      resolve({ code: null, stdout, stderr, timedOut: true });
-    }, COMPILER_TIMEOUT_MS);
+    }, input.timeoutMs);
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
@@ -431,7 +432,7 @@ async function runCompiler(input: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut: false });
+      resolve({ code: timedOut ? null : code, stdout, stderr, timedOut });
     });
   });
 }
@@ -494,7 +495,16 @@ export async function deriveWorkspaceArtifact(input: {
   projection: ProjectionDescriptor;
   manifestPath: string;
   stateDirectory: string;
+  /**
+   * Operational timeout override used by bounded callers/tests. It can only lower admission:
+   * timeout is always advisory/failed, never a reason to strengthen evidence.
+   */
+  compilerTimeoutMs?: number;
 }): Promise<DerivedWorkspaceArtifactDescriptor> {
+  const compilerTimeoutMs = input.compilerTimeoutMs ?? COMPILER_TIMEOUT_MS;
+  if (!Number.isSafeInteger(compilerTimeoutMs) || compilerTimeoutMs <= 0) {
+    throw new ReviewLspError("DERIVED_ARTIFACT_INVALID", "compiler timeout must be a positive safe integer");
+  }
   const recipe = await strictRecipe(input.candidate, input.manifestPath);
   const engine = await admitEngineArtifact({
     snapshot: input.snapshot,
@@ -530,6 +540,7 @@ export async function deriveWorkspaceArtifact(input: {
     compiler_artifact_id: engine.artifact_id,
     compiler_entrypoint_sha256: sha256(compilerBytes),
     mount_relative_path: recipe.mount_relative_path,
+    compiler_timeout_ms: compilerTimeoutMs,
   });
   const derivedRoot = join(input.stateDirectory, "derived");
   const derivationIndexRoot = join(derivedRoot, "by-derivation");
@@ -619,6 +630,7 @@ export async function deriveWorkspaceArtifact(input: {
       policy: sandbox.policy,
       home,
       tmp,
+      timeoutMs: compilerTimeoutMs,
     });
     const errors = diagnosticErrorCount(run.code, run.stdout, run.stderr);
     const scan = await scanDependencyTree(outputRoot);
