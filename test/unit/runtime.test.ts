@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,13 +138,16 @@ describe("semantic runtime reuse", () => {
   }, 120_000);
 
   it("does not cache a runtime that failed to start", async () => {
-    const { candidate, profile: admitted, manager } = await scenario();
+    const { candidate, profile: admitted, state, manager } = await scenario();
+    // A regular file is an unusable state-directory parent on every supported host. This keeps
+    // the startup-failure gate deterministic instead of relying on Linux-specific /proc behavior.
+    const invalidState = join(state, "not-a-directory");
+    await writeFile(invalidState, "not a directory\n");
 
     await expect(manager.acquire({
       candidate,
       profile: admitted,
-      // An unusable state directory makes session creation fail.
-      stateDirectory: "/proc/review-lsp-cannot-exist",
+      stateDirectory: invalidState,
     })).rejects.toThrow();
 
     expect(manager.liveRuntimeCount).toBe(0);

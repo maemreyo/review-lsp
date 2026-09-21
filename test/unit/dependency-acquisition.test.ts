@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -50,7 +50,16 @@ async function seedCorepackCache(state: string): Promise<boolean> {
         version?: unknown;
       };
       if (manifest.name === "pnpm" && manifest.version === "10.20.0") {
-        await cp(packageRoot, join(target, "v1", "pnpm", "10.20.0"), { recursive: true });
+        const cachedRoot = join(target, "v1", "pnpm", "10.20.0");
+        await cp(packageRoot, cachedRoot, { recursive: true });
+        // Corepack uses this marker to recognize an already-installed package-manager cache.
+        // The source bytes came from pnpm/action-setup and the exact package name/version was
+        // checked above; this test-only marker is not dependency-integrity evidence.
+        await writeFile(join(cachedRoot, ".corepack"), JSON.stringify({
+          locator: { name: "pnpm", reference: "10.20.0" },
+          bin: { pnpm: "bin/pnpm.cjs", pnpx: "bin/pnpx.cjs" },
+          hash: "sha512.review-lsp-test-fixture",
+        }));
         return true;
       }
     } catch {
