@@ -10,7 +10,7 @@
 
 Review-LSP runs LSP semantic queries against an exact Git candidate, not whichever checkout happens to be live. Each successful query returns a content-addressed receipt binding the candidate, document, semantic toolchain, environment, request, result, and isolation mode.
 
-Current public release: **0.1.0-alpha.2**.
+Current public release: **0.1.0-alpha.3**.
 
 ```bash
 npm install review-lsp@alpha
@@ -155,7 +155,7 @@ The inner process verifies that `/candidate` is an explicit Linux read-only moun
 
 ## Release evidence
 
-`0.1.0-alpha.2` is release-gated by:
+`0.1.0-alpha.3` is release-gated by:
 
 - local macOS arm64 / Node 24.19.0 `pnpm check`, package smoke and P7 benchmark — PASS;
 - candidate-bound independent review plus clean successor review for the final blocker — PASS;
@@ -164,7 +164,7 @@ The inner process verifies that `/candidate` is an explicit Linux read-only moun
 - dedicated Linux Docker isolation job — required PASS before publish;
 - public-registry clean-install smoke — run after publication and recorded separately.
 
-See [compatibility evidence](docs/compatibility/0.1.0-alpha.2.md) and the [release notes](docs/releases/0.1.0-alpha.2.md).
+See [compatibility evidence](docs/compatibility/0.1.0-alpha.3.md) and the [release notes](docs/releases/0.1.0-alpha.3.md).
 
 ## Current limitations
 

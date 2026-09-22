@@ -6,6 +6,19 @@ The project is currently prerelease software. Until 1.0, minor versions may incl
 
 ## Unreleased
 
+## 0.1.0-alpha.3 — 2026-09-22
+
+### Fixed
+
+- Bind candidate-contained local `.tgz` dependencies referenced through pnpm `file:` lockfile entries into dependency input identity and acquisition materialization.
+- Fail closed when a local file dependency is missing, escapes candidate authority, is ambiguous, or is not an admitted tarball artifact.
+- Preserve snapshot invalidation when local tarball bytes change by including those bytes in `input_set_id`.
+
+### Evidence
+
+- Real Zamery Workbench candidate acquisition with vendored verifiable-handoff tarballs: `SATISFIED`, frozen lockfile, scripts ignored, explicit acquisition policy.
+- Local `pnpm check`, package smoke, and real-repository acquisition dogfood are required PASS before publication.
+
 ## 0.1.0-alpha.2 — 2026-09-21
 
 ### Added
