@@ -74,6 +74,25 @@ function referenceDeclarationOption(operation: string, raw: string | undefined):
   throw new Error("--include-declaration must be true or false");
 }
 
+type QueryOperation = "hover" | "definition" | "references";
+
+async function runSessionQuery(input: {
+  session: SemanticSession;
+  operation: QueryOperation;
+  path: string;
+  line: number;
+  character: number;
+  includeDeclaration?: boolean | undefined;
+}) {
+  const { session, operation, path, line, character } = input;
+  if (operation === "hover") return session.hover({ path, line, character });
+  if (operation === "definition") return session.definition({ path, line, character });
+  if (typeof input.includeDeclaration !== "boolean") {
+    throw new Error("references query requires includeDeclaration");
+  }
+  return session.references({ path, line, character, includeDeclaration: input.includeDeclaration });
+}
+
 function usage(): never {
   process.stderr.write([
     "Review-LSP",
@@ -243,11 +262,14 @@ async function main(): Promise<void> {
       isolationIdentity: `docker:${imageId}`,
     });
     try {
-      const receipt = operation === "hover"
-        ? await session.hover({ path, line, character })
-        : operation === "definition"
-          ? await session.definition({ path, line, character })
-          : await session.references({ path, line, character, includeDeclaration: includeDeclaration as boolean });
+      const receipt = await runSessionQuery({
+        session,
+        operation,
+        path,
+        line,
+        character,
+        ...(operation === "references" ? { includeDeclaration } : {}),
+      });
       process.stdout.write(`${JSON.stringify({
         receipt,
         environment: session.environment,
@@ -286,11 +308,14 @@ async function main(): Promise<void> {
       resolvingProject,
     });
     try {
-      const receipt = operation === "hover"
-        ? await session.hover({ path, line, character })
-        : operation === "definition"
-          ? await session.definition({ path, line, character })
-          : await session.references({ path, line, character, includeDeclaration: includeDeclaration as boolean });
+      const receipt = await runSessionQuery({
+        session,
+        operation,
+        path,
+        line,
+        character,
+        ...(operation === "references" ? { includeDeclaration } : {}),
+      });
       process.stdout.write(`${JSON.stringify({
         receipt_path: receiptPath(queryState, receipt),
         receipt,
