@@ -131,10 +131,11 @@ export interface ContainerMount {
 
 export interface ContainerRunSpec {
   imageId: string;
-  operation: "hover" | "definition";
+  operation: "hover" | "definition" | "references";
   path: string;
   line: number;
   character: number;
+  includeDeclaration?: boolean;
   /** Read-only mounts: candidate source or projection, dependency snapshot, derived artifacts. */
   mounts: ContainerMount[];
   descriptorPath: string;
@@ -154,6 +155,12 @@ export interface ContainerRunSpec {
  */
 export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
   requireMountSafeHostPath(spec.descriptorPath, "container descriptor path");
+  if (spec.operation === "references" && typeof spec.includeDeclaration !== "boolean") {
+    throw new ReviewLspError("RECEIPT_INVALID", "container references query requires includeDeclaration");
+  }
+  if (spec.operation !== "references" && spec.includeDeclaration !== undefined) {
+    throw new ReviewLspError("RECEIPT_INVALID", `${spec.operation} container query must not set includeDeclaration`);
+  }
   for (const mount of spec.mounts) {
     requireMountSafeHostPath(mount.source, mount.label);
     if (!mount.destination.startsWith("/")) {
@@ -192,6 +199,9 @@ export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
     spec.path,
     String(spec.line),
     String(spec.character),
+    ...(spec.operation === "references"
+      ? ["--include-declaration", String(spec.includeDeclaration)]
+      : []),
     "--state",
     "/state",
   ];
@@ -201,10 +211,11 @@ function assertContainerReceipt(input: {
   receipt: SemanticReceipt;
   environment: EnvironmentManifest;
   candidate: CandidateDescriptor;
-  operation: "hover" | "definition";
+  operation: "hover" | "definition" | "references";
   path: string;
   line: number;
   character: number;
+  includeDeclaration?: boolean;
   imageId: string;
 }): void {
   validateReceipt(input.receipt);
@@ -217,7 +228,11 @@ function assertContainerReceipt(input: {
   if (input.receipt.operation !== input.operation
     || input.receipt.document.path !== input.path
     || input.receipt.request.line !== input.line
-    || input.receipt.request.character !== input.character) {
+    || input.receipt.request.character !== input.character
+    || (input.operation === "references"
+      && input.receipt.request.include_declaration !== input.includeDeclaration)
+    || (input.operation !== "references"
+      && input.receipt.request.include_declaration !== undefined)) {
     throw new ReviewLspError("RECEIPT_INVALID", "container receipt operation/document/request differs from host request");
   }
   if (input.receipt.source_binding !== "VERIFIED"
@@ -257,16 +272,23 @@ export interface DockerSemanticQueryResult {
 
 export async function runDockerSemanticQuery(input: {
   candidate: CandidateDescriptor;
-  operation: "hover" | "definition";
+  operation: "hover" | "definition" | "references";
   path: string;
   line: number;
   character: number;
+  includeDeclaration?: boolean;
   image: string;
   stateDirectory: string;
   timeoutMs?: number;
   /** Sealed dependency snapshot to expose read-only alongside the candidate. */
   dependencyRoot?: string | undefined;
 }): Promise<DockerSemanticQueryResult> {
+  if (input.operation === "references" && typeof input.includeDeclaration !== "boolean") {
+    throw new ReviewLspError("RECEIPT_INVALID", "Docker references query requires includeDeclaration");
+  }
+  if (input.operation !== "references" && input.includeDeclaration !== undefined) {
+    throw new ReviewLspError("RECEIPT_INVALID", `${input.operation} Docker query must not set includeDeclaration`);
+  }
   const path = assertedRelativePath(input.path);
   const imageId = await resolveDockerImageId(input.image);
   const sourceRoot = await realpath(input.candidate.source_root);
@@ -290,6 +312,7 @@ export async function runDockerSemanticQuery(input: {
       path,
       line: input.line,
       character: input.character,
+      ...(input.operation === "references" ? { includeDeclaration: input.includeDeclaration } : {}),
       mounts: [
         { source: sourceRoot, destination: "/candidate", label: "candidate source root" },
         ...(input.dependencyRoot
@@ -318,6 +341,7 @@ export async function runDockerSemanticQuery(input: {
       path,
       line: input.line,
       character: input.character,
+      ...(input.operation === "references" ? { includeDeclaration: input.includeDeclaration } : {}),
       imageId,
     });
     const { receipt_id: expectedReceiptId, ...stable } = receipt;

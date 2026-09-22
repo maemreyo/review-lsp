@@ -159,6 +159,31 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     }
   });
 
+  server.registerTool("review_lsp_references", {
+    description: "Run textDocument/references against the exact candidate and return the server response plus provenance bindings for every referenced URI.",
+    inputSchema: {
+      ...querySchema,
+      include_declaration: z.boolean().describe("Whether to include the declaration location in the requested reference set"),
+    },
+  }, async ({ expected_candidate_id, path, line, character, include_declaration }) => {
+    let lease;
+    try {
+      requireCandidate(host, expected_candidate_id);
+      const project = resolveProjectForDocument(host.candidate, path);
+      lease = await acquireHostRuntime(host, project);
+      return jsonResult(await lease.session.references({
+        path,
+        line,
+        character,
+        includeDeclaration: include_declaration,
+      }));
+    } catch (error) {
+      return errorResult(error);
+    } finally {
+      lease?.release();
+    }
+  });
+
   const transport = new StdioServerTransport(process.stdin, process.stdout, { maxBufferSize: 1024 * 1024 });
   transport.onerror = (error) => {
     process.stderr.write(`review-lsp MCP transport error: ${error.message}\n`);

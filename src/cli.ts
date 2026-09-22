@@ -63,6 +63,17 @@ function flag(args: string[], name: string): boolean {
   return true;
 }
 
+function referenceDeclarationOption(operation: string, raw: string | undefined): boolean | undefined {
+  if (operation !== "references") {
+    if (raw !== undefined) throw new Error("--include-declaration is only valid for references queries");
+    return undefined;
+  }
+  if (raw === undefined) throw new Error("references queries require --include-declaration <true|false>");
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error("--include-declaration must be true or false");
+}
+
 function usage(): never {
   process.stderr.write([
     "Review-LSP",
@@ -72,8 +83,8 @@ function usage(): never {
     "  review-lsp inspect <candidate.json>",
     "  review-lsp dependency-inputs <candidate.json>",
     "  review-lsp acquire <candidate.json> [--state DIR] [--allow-network]",
-    "  review-lsp query <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
-    "  review-lsp container-query <image> <candidate.json> <hover|definition> <path> <line> <character> [--state DIR]",
+    "  review-lsp query <candidate.json> <hover|definition|references> <path> <line> <character> [--include-declaration true|false] [--state DIR]",
+    "  review-lsp container-query <image> <candidate.json> <hover|definition|references> <path> <line> <character> [--include-declaration true|false] [--state DIR]",
     "  review-lsp validate <receipt.json>",
     "  review-lsp close <candidate.json>",
     "  review-lsp serve <repo> <commit> [--state DIR]",
@@ -183,9 +194,11 @@ async function main(): Promise<void> {
   }
 
   if (command === "container-query") {
+    const includeDeclarationRaw = option(args, "--include-declaration");
     const [image, descriptor, operation, path, lineRaw, characterRaw] = args;
     if (!image || !descriptor || !operation || !path || lineRaw === undefined || characterRaw === undefined || args.length !== 6) usage();
-    if (operation !== "hover" && operation !== "definition") usage();
+    if (operation !== "hover" && operation !== "definition" && operation !== "references") usage();
+    const includeDeclaration = referenceDeclarationOption(operation, includeDeclarationRaw);
     const line = Number(lineRaw);
     const character = Number(characterRaw);
     if (!Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(character) || character < 0) usage();
@@ -196,6 +209,7 @@ async function main(): Promise<void> {
       path,
       line,
       character,
+      ...(operation === "references" ? { includeDeclaration: includeDeclaration as boolean } : {}),
       image,
       stateDirectory,
     });
@@ -209,9 +223,11 @@ async function main(): Promise<void> {
   }
 
   if (command === "__container-query") {
+    const includeDeclarationRaw = option(args, "--include-declaration");
     const [descriptor, operation, path, lineRaw, characterRaw] = args;
     if (!descriptor || !operation || !path || lineRaw === undefined || characterRaw === undefined || args.length !== 5) usage();
-    if (operation !== "hover" && operation !== "definition") usage();
+    if (operation !== "hover" && operation !== "definition" && operation !== "references") usage();
+    const includeDeclaration = referenceDeclarationOption(operation, includeDeclarationRaw);
     const line = Number(lineRaw);
     const character = Number(characterRaw);
     if (!Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(character) || character < 0) usage();
@@ -229,7 +245,9 @@ async function main(): Promise<void> {
     try {
       const receipt = operation === "hover"
         ? await session.hover({ path, line, character })
-        : await session.definition({ path, line, character });
+        : operation === "definition"
+          ? await session.definition({ path, line, character })
+          : await session.references({ path, line, character, includeDeclaration: includeDeclaration as boolean });
       process.stdout.write(`${JSON.stringify({
         receipt,
         environment: session.environment,
@@ -241,9 +259,11 @@ async function main(): Promise<void> {
   }
 
   if (command === "query") {
+    const includeDeclarationRaw = option(args, "--include-declaration");
     const [descriptor, operation, path, lineRaw, characterRaw] = args;
     if (!descriptor || !operation || !path || lineRaw === undefined || characterRaw === undefined || args.length !== 5) usage();
-    if (operation !== "hover" && operation !== "definition") usage();
+    if (operation !== "hover" && operation !== "definition" && operation !== "references") usage();
+    const includeDeclaration = referenceDeclarationOption(operation, includeDeclarationRaw);
     const line = Number(lineRaw);
     const character = Number(characterRaw);
     if (!Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(character) || character < 0) usage();
@@ -268,7 +288,9 @@ async function main(): Promise<void> {
     try {
       const receipt = operation === "hover"
         ? await session.hover({ path, line, character })
-        : await session.definition({ path, line, character });
+        : operation === "definition"
+          ? await session.definition({ path, line, character })
+          : await session.references({ path, line, character, includeDeclaration: includeDeclaration as boolean });
       process.stdout.write(`${JSON.stringify({
         receipt_path: receiptPath(queryState, receipt),
         receipt,

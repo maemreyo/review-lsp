@@ -146,6 +146,33 @@ try {
     throw new Error(`installed package receipt binding mismatch: ${JSON.stringify(query.receipt)}`);
   }
 
+  const referencesQuery = JSON.parse((await run(process.execPath, [
+    installedCli,
+    "query",
+    descriptor,
+    "references",
+    "src/value.ts",
+    "0",
+    String("export const ".length),
+    "--include-declaration",
+    "false",
+    "--state",
+    state,
+  ], { cwd: consumer })).stdout);
+  if (referencesQuery.receipt?.operation !== "references"
+    || referencesQuery.receipt?.request?.include_declaration !== false
+    || referencesQuery.receipt?.candidate?.commit_oid !== a
+    || referencesQuery.receipt?.source_binding !== "VERIFIED"
+    || referencesQuery.receipt?.environment_binding !== "VERIFIED"
+    || !JSON.stringify(referencesQuery.receipt?.result).includes("SOURCE_CANDIDATE")) {
+    throw new Error(`installed package references binding mismatch: ${JSON.stringify(referencesQuery.receipt)}`);
+  }
+
+  const installedApi = await import(join(installedRoot, "dist", "src", "index.js"));
+  if (typeof installedApi.SemanticSession?.prototype?.references !== "function") {
+    throw new Error("installed public API omitted SemanticSession.references");
+  }
+
   await run(process.execPath, [installedCli, "close", descriptor, "--state", state], { cwd: consumer });
 
   process.stdout.write(JSON.stringify({
@@ -165,6 +192,8 @@ try {
     live_b: b,
     source_binding: query.receipt.source_binding,
     environment_binding: query.receipt.environment_binding,
+    references_operation: referencesQuery.receipt.operation,
+    references_include_declaration: referencesQuery.receipt.request.include_declaration,
   }, null, 2) + "\n");
 } finally {
   await rm(scratch, { recursive: true, force: true }).catch(() => undefined);

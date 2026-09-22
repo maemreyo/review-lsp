@@ -89,6 +89,15 @@ describe("container execution profile", () => {
     expect(base.imageId.startsWith("sha256:")).toBe(true);
   });
 
+  it("binds references declaration inclusion into the inner container query", () => {
+    const args = buildContainerRunArgs({ ...base, operation: "references", includeDeclaration: false });
+    expect(valueAfter(args, "--include-declaration")).toBe("false");
+    expect(() => buildContainerRunArgs({ ...base, operation: "references" }))
+      .toThrow(/requires includeDeclaration/);
+    expect(() => buildContainerRunArgs({ ...base, operation: "hover", includeDeclaration: true }))
+      .toThrow(/must not set includeDeclaration/);
+  });
+
   it("refuses a host path the mount encoder cannot represent unambiguously", () => {
     // A comma would split the mount specification and silently change what is exposed.
     expect(() => buildContainerRunArgs({

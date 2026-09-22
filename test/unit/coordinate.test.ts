@@ -98,6 +98,23 @@ describe("guarded queries", () => {
       await expect(session.hover({
         path: "src/value.ts", line: 0, character: 13, expect: { token: "somethingElse" },
       })).rejects.toThrow(/COORDINATE_EXPECTATION_UNMET/);
+
+      const guardedReferences = await session.references({
+        path: "src/value.ts",
+        line: 0,
+        character: 13,
+        includeDeclaration: true,
+        expect: { token: "value" },
+      });
+      expect(guardedReferences.document.context.token).toBe("value");
+      expect(guardedReferences.request.include_declaration).toBe(true);
+      await expect(session.references({
+        path: "src/value.ts",
+        line: 0,
+        character: 13,
+        includeDeclaration: false,
+        expect: { token: "somethingElse" },
+      })).rejects.toThrow(/COORDINATE_EXPECTATION_UNMET/);
     } finally {
       await session.close();
     }

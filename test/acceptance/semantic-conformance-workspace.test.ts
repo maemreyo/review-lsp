@@ -389,6 +389,20 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       expect(referenceUris).toHaveLength(1);
       const referencePath = await realpath(fileURLToPath(referenceUris[0]!));
       expect(derivedBinding?.sha256).toBe(sha256(await readFile(referencePath)));
+
+      const [admittedReferences, referenceReferences] = await Promise.all([
+        admitted.references({
+          path: "packages/app/src/main.ts", line: 1, character: position, includeDeclaration: true,
+        }),
+        reference.references(referenceDocument, 1, position, true),
+      ]);
+      expect(admittedReferences.environment_binding).toBe("VERIFIED");
+      const admittedReferenceResult = definitionResult(admittedReferences);
+      expect(admittedReferenceResult.bindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ classification: "DERIVED_WORKSPACE_ARTIFACT" }),
+        expect.objectContaining({ classification: "SOURCE_CANDIDATE" }),
+      ]));
+      expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }
@@ -603,6 +617,18 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       const referencePath = await realpath(fileURLToPath(referenceUris[0]!));
       const referenceBytes = await readFile(referencePath);
       expect(dependencyBinding?.sha256).toBe(sha256(referenceBytes));
+
+      const [admittedReferences, referenceReferences] = await Promise.all([
+        admitted.references({ path: "src/main.ts", line: 1, character: position, includeDeclaration: true }),
+        reference.references(referenceDocument, 1, position, true),
+      ]);
+      expect(admittedReferences.environment_binding).toBe("VERIFIED");
+      const admittedReferenceResult = definitionResult(admittedReferences);
+      expect(admittedReferenceResult.bindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ classification: "DEPENDENCY_SNAPSHOT" }),
+        expect.objectContaining({ classification: "SOURCE_CANDIDATE" }),
+      ]));
+      expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }

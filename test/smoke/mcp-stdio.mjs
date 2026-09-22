@@ -62,7 +62,7 @@ try {
 
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  const expected = ["review_lsp_candidate_info", "review_lsp_definition", "review_lsp_hover"];
+  const expected = ["review_lsp_candidate_info", "review_lsp_definition", "review_lsp_hover", "review_lsp_references"];
   if (JSON.stringify(names) !== JSON.stringify(expected)) {
     throw new Error(`unexpected MCP tools: ${JSON.stringify(names)}`);
   }
@@ -75,6 +75,9 @@ try {
   }
   if (structured.commit_oid !== commit || structured.environment_binding !== "VERIFIED") {
     throw new Error(`candidate_info binding mismatch: ${JSON.stringify(structured)}`);
+  }
+  if (!Array.isArray(structured.capabilities) || !structured.capabilities.includes("references")) {
+    throw new Error(`candidate_info omitted references capability: ${JSON.stringify(structured.capabilities)}`);
   }
 
   const hovers = await Promise.all(Array.from({ length: 4 }, () => client.callTool({
@@ -95,6 +98,27 @@ try {
   const sessionIds = new Set(hovers.map((hover) => hover.structuredContent?.session_id));
   if (sessionIds.size !== 1 || !sessionIds.has(structured.session_id)) {
     throw new Error(`concurrent queries did not share one live semantic runtime: info=${structured.session_id} hover=${JSON.stringify([...sessionIds])}`);
+  }
+
+  const references = await client.callTool({
+    name: "review_lsp_references",
+    arguments: {
+      expected_candidate_id: structured.candidate_id,
+      path: "src/value.ts",
+      line: 0,
+      character: "export const ".length,
+      include_declaration: false,
+    },
+  });
+  if (references.isError) throw new Error(`references failed: ${JSON.stringify(references.content)}`);
+  const referenceReceipt = references.structuredContent;
+  if (referenceReceipt?.operation !== "references"
+    || referenceReceipt?.request?.include_declaration !== false
+    || !JSON.stringify(referenceReceipt?.result).includes("SOURCE_CANDIDATE")) {
+    throw new Error(`references receipt was not candidate-bound: ${JSON.stringify(referenceReceipt)}`);
+  }
+  if (referenceReceipt?.session_id !== structured.session_id) {
+    throw new Error(`references did not reuse the bound runtime: ${referenceReceipt?.session_id}`);
   }
 
   const mismatch = await client.callTool({

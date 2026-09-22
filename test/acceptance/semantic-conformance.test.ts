@@ -301,6 +301,16 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       const admittedResult = admittedDefinition.result as { server_response?: unknown };
       expect(normalizeUris(admittedResult.server_response, projection.execution_root))
         .toEqual(normalizeUris(referenceDefinition.value, referenceRoot));
+
+      const [admittedReferences, referenceReferences] = await Promise.all([
+        admitted.references({ path: "src/main.ts", line: 1, character: position, includeDeclaration: true }),
+        reference.references(referenceDocument, 1, position, true),
+      ]);
+      expect(admittedReferences.environment_binding).toBe("VERIFIED");
+      expect(admittedReferences.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+      const admittedReferenceResult = admittedReferences.result as { server_response?: unknown };
+      expect(normalizeUris(admittedReferenceResult.server_response, projection.execution_root))
+        .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }
@@ -385,6 +395,16 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       const admittedResult = admittedDefinition.result as { server_response?: unknown };
       expect(normalizeUris(admittedResult.server_response, projection.execution_root))
         .toEqual(normalizeUris(referenceDefinition.value, referenceRoot));
+
+      const [admittedReferences, referenceReferences] = await Promise.all([
+        admitted.references({ path: "src/main.ts", line: 1, character: position, includeDeclaration: true }),
+        reference.references(referenceDocument, 1, position, true),
+      ]);
+      expect(admittedReferences.environment_binding).toBe("VERIFIED");
+      expect(admittedReferences.semantic_toolchain.semantic_engine.implementation).toBe("typescript-native-lsp");
+      const admittedReferenceResult = admittedReferences.result as { server_response?: unknown };
+      expect(normalizeUris(admittedReferenceResult.server_response, projection.execution_root))
+        .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }
