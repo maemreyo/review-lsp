@@ -55,6 +55,30 @@ describe("TypeScript A/B candidate semantics", () => {
       expect(definitionResult.bindings).toEqual(expect.arrayContaining([
         expect.objectContaining({ classification: "SOURCE_CANDIDATE", path: "src/value.ts" }),
       ]));
+
+      const referencesWithoutDeclaration = await sessionA.references({
+        path: "src/value.ts", line: 0, character: 13, includeDeclaration: false,
+      });
+      const referencesWithDeclaration = await sessionA.references({
+        path: "src/value.ts", line: 0, character: 13, includeDeclaration: true,
+      });
+      validateReceipt(referencesWithoutDeclaration);
+      validateReceipt(referencesWithDeclaration);
+      expect(referencesWithoutDeclaration.operation).toBe("references");
+      expect(referencesWithoutDeclaration.request.include_declaration).toBe(false);
+      expect(referencesWithDeclaration.request.include_declaration).toBe(true);
+      expect(referencesWithoutDeclaration.receipt_id).not.toBe(referencesWithDeclaration.receipt_id);
+      const referencesResult = referencesWithDeclaration.result as {
+        server_response?: unknown[];
+        bindings?: Array<{ classification?: string; path?: string }>;
+      };
+      expect(referencesResult.server_response?.length).toBeGreaterThan(0);
+      expect(referencesResult.bindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ classification: "SOURCE_CANDIDATE" }),
+      ]));
+      expect(referencesWithDeclaration.limitations).toContain(
+        "references are limited to the language server static semantic model; dynamic or generated usages may be absent",
+      );
     } finally {
       await Promise.all([sessionA.close(), sessionB.close()]);
     }

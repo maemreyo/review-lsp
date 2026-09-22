@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { persistReceipt, receiptPath, validateReceiptFile } from "../../src/core/receipts.js";
+import { persistReceipt, receiptPath, validateReceipt, validateReceiptFile } from "../../src/core/receipts.js";
 
 const roots: string[] = [];
 
@@ -63,6 +63,12 @@ describe("receipt integrity", () => {
       request_duration_ms: 1,
       observed_at: "2026-09-18T00:00:00.000Z",
     });
+    expect(() => validateReceipt({ ...receipt, operation: "references" })).toThrow(/include_declaration/);
+    expect(() => validateReceipt({
+      ...receipt,
+      request: { ...receipt.request, include_declaration: false },
+    })).toThrow(/must not contain request\.include_declaration/);
+
     const path = receiptPath(root, receipt);
     const stored = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     stored.result = { contents: "number" };

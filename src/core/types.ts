@@ -104,7 +104,7 @@ export interface SemanticReceipt {
   profile_sha256: string;
   session_id: string;
   session_epoch: number;
-  operation: "hover" | "definition";
+  operation: "hover" | "definition" | "references";
   document: {
     path: string;
     uri: string;
@@ -115,7 +115,7 @@ export interface SemanticReceipt {
     /** What the candidate source holds at the requested position. */
     context: CoordinateContext;
   };
-  request: { line: number; character: number };
+  request: { line: number; character: number; include_declaration?: boolean };
   execution_status: ExecutionStatus;
   source_binding: BindingState;
   environment_binding: BindingState;

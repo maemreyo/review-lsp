@@ -14,11 +14,13 @@ import {
   ExitNotification,
   HoverRequest,
   InitializeRequest,
+  ReferencesRequest,
   InitializedNotification,
   ShutdownRequest,
   type Definition,
   type Hover,
   type InitializeResult,
+  type Location,
   type LocationLink,
 } from "vscode-languageserver-protocol";
 import { URI } from "vscode-uri";
@@ -125,6 +127,7 @@ export class StdioLspDriver {
           synchronization: { dynamicRegistration: false, willSave: false, willSaveWaitUntil: false, didSave: false },
           hover: { dynamicRegistration: false, contentFormat: ["markdown", "plaintext"] },
           definition: { dynamicRegistration: false, linkSupport: true },
+          references: { dynamicRegistration: false },
         },
         workspace: {
           configuration: true,
@@ -186,6 +189,22 @@ export class StdioLspDriver {
     return this.request<Definition | LocationLink[] | null>(DefinitionRequest.method, {
       textDocument: { uri: document.uri },
       position: { line, character },
+    });
+  }
+
+  async references(
+    document: OpenDocument,
+    line: number,
+    character: number,
+    includeDeclaration: boolean,
+  ): Promise<RequestOutcome<Location[] | null>> {
+    if (!this.capabilities?.referencesProvider) {
+      throw new ReviewLspError("LSP_CAPABILITY_UNSUPPORTED", "server does not advertise references support");
+    }
+    return this.request<Location[] | null>(ReferencesRequest.method, {
+      textDocument: { uri: document.uri },
+      position: { line, character },
+      context: { includeDeclaration },
     });
   }
 

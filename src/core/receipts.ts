@@ -48,6 +48,24 @@ export function validateReceipt(receipt: SemanticReceipt): void {
   if (receipt.schema_version !== "review-lsp.receipt.v1") {
     throw new ReviewLspError("RECEIPT_INVALID", `unsupported receipt schema ${String(receipt.schema_version)}`);
   }
+  if (!["hover", "definition", "references"].includes(receipt.operation)) {
+    throw new ReviewLspError("RECEIPT_INVALID", `unsupported semantic operation ${String(receipt.operation)}`);
+  }
+  if (!receipt.request
+    || !Number.isSafeInteger(receipt.request.line)
+    || receipt.request.line < 0
+    || !Number.isSafeInteger(receipt.request.character)
+    || receipt.request.character < 0) {
+    throw new ReviewLspError("RECEIPT_INVALID", "receipt request position must contain non-negative integer line/character");
+  }
+  const hasIncludeDeclaration = Object.prototype.hasOwnProperty.call(receipt.request, "include_declaration");
+  if (receipt.operation === "references") {
+    if (!hasIncludeDeclaration || typeof receipt.request.include_declaration !== "boolean") {
+      throw new ReviewLspError("RECEIPT_INVALID", "references receipt must bind boolean request.include_declaration");
+    }
+  } else if (hasIncludeDeclaration) {
+    throw new ReviewLspError("RECEIPT_INVALID", `${receipt.operation} receipt must not contain request.include_declaration`);
+  }
   if (contentId("rcpt", stableReceipt(receipt)) !== receipt.receipt_id) {
     throw new ReviewLspError("RECEIPT_INVALID", "receipt content-addressed identity does not match content");
   }

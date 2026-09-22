@@ -51,7 +51,12 @@ export interface SemanticQueryInput {
   expect?: CoordinateExpectation;
 }
 
-interface DefinitionBinding {
+export interface ReferencesQueryInput extends SemanticQueryInput {
+  /** Whether the declaration location itself is part of the requested reference set. */
+  includeDeclaration: boolean;
+}
+
+interface SemanticTargetBinding {
   uri: string;
   classification:
     | "SOURCE_CANDIDATE"
@@ -114,7 +119,7 @@ function resultUris(value: unknown): string[] {
 }
 
 /**
- * Binds a definition result to an admitted root.
+ * Binds a semantic target URI to an admitted root.
  *
  * Classification goes through the projection-aware classifier so that a result reached
  * lexically through the projection but really living in the sealed dependency snapshot is
@@ -124,12 +129,12 @@ function resultUris(value: unknown): string[] {
  * A candidate-source result is bound to the candidate entry's digest, not to the bytes found
  * in the projection, so the binding remains a statement about the candidate.
  */
-async function bindDefinitionUri(
+async function bindSemanticTargetUri(
   candidate: CandidateDescriptor,
   profile: TypeScriptProfile,
   uri: string,
   roots: { executionRoot: string; dependencyRoot?: string | undefined; derivedRoots?: string[] | undefined },
-): Promise<DefinitionBinding> {
+): Promise<SemanticTargetBinding> {
   const serverRoot = profile.server_runtime_root;
   const classified = await classifyProjectionUri(uri, {
     executionRoot: roots.executionRoot,
@@ -360,7 +365,7 @@ export class SemanticSession {
     profile: TypeScriptProfile;
     session_id: string;
     session_epoch: number;
-    capabilities: ["hover", "definition"];
+    capabilities: ["hover", "definition", "references"];
   }> {
     this.ensureOpen();
     await verifyCandidateIntegrity(this.candidate);
@@ -370,7 +375,7 @@ export class SemanticSession {
       profile: this.profile,
       session_id: this.sessionId,
       session_epoch: this.sessionEpoch,
-      capabilities: ["hover", "definition"],
+      capabilities: ["hover", "definition", "references"],
     };
   }
 
@@ -380,6 +385,10 @@ export class SemanticSession {
 
   async definition(input: SemanticQueryInput): Promise<SemanticReceipt> {
     return this.query("definition", input);
+  }
+
+  async references(input: ReferencesQueryInput): Promise<SemanticReceipt> {
+    return this.query("references", input);
   }
 
   async close(): Promise<void> {
@@ -401,12 +410,18 @@ export class SemanticSession {
   }
 
   private async query(
-    operation: "hover" | "definition",
-    input: SemanticQueryInput,
+    operation: "hover" | "definition" | "references",
+    input: SemanticQueryInput | ReferencesQueryInput,
   ): Promise<SemanticReceipt> {
     this.ensureOpen();
     if (!Number.isSafeInteger(input.line) || input.line < 0 || !Number.isSafeInteger(input.character) || input.character < 0) {
       throw new ReviewLspError("LSP_PROTOCOL_ERROR", "line and character must be non-negative 0-based integers");
+    }
+    const includeDeclaration = operation === "references"
+      ? (input as ReferencesQueryInput).includeDeclaration
+      : undefined;
+    if (operation === "references" && typeof includeDeclaration !== "boolean") {
+      throw new ReviewLspError("LSP_PROTOCOL_ERROR", "references requires an explicit boolean includeDeclaration");
     }
 
     await verifyCandidateIntegrity(this.candidate);
@@ -511,9 +526,9 @@ export class SemanticSession {
       const response = await this.driver.hover(document, input.line, input.character);
       result = response.value;
       durationMs = response.durationMs;
-    } else {
+    } else if (operation === "definition") {
       const response = await this.driver.definition(document, input.line, input.character);
-      const bindings = await Promise.all(resultUris(response.value).map((uri) => bindDefinitionUri(
+      const bindings = await Promise.all(resultUris(response.value).map((uri) => bindSemanticTargetUri(
         this.candidate,
         this.profile,
         uri,
@@ -527,6 +542,25 @@ export class SemanticSession {
         environmentBinding = "PARTIAL";
         limitations.push("definition result includes a URI outside every admitted root");
       }
+      result = { server_response: response.value, bindings };
+      durationMs = response.durationMs;
+    } else {
+      const response = await this.driver.references(document, input.line, input.character, includeDeclaration as boolean);
+      const bindings = await Promise.all(resultUris(response.value).map((uri) => bindSemanticTargetUri(
+        this.candidate,
+        this.profile,
+        uri,
+        {
+          executionRoot: this.projection?.execution_root ?? this.candidate.source_root,
+          dependencyRoot: this.snapshot?.dependency_root,
+          derivedRoots: this.projection?.derived_artifact_roots ?? [],
+        },
+      )));
+      if (bindings.some((binding) => binding.classification === "UNBOUND")) {
+        environmentBinding = "PARTIAL";
+        limitations.push("references result includes a URI outside every admitted root");
+      }
+      limitations.push("references are limited to the language server static semantic model; dynamic or generated usages may be absent");
       result = { server_response: response.value, bindings };
       durationMs = response.durationMs;
     }
@@ -566,7 +600,11 @@ export class SemanticSession {
         position_encoding: "utf-16",
         context: coordinateContext,
       },
-      request: { line: input.line, character: input.character },
+      request: {
+        line: input.line,
+        character: input.character,
+        ...(operation === "references" ? { include_declaration: includeDeclaration as boolean } : {}),
+      },
       execution_status: "OK",
       semantic_toolchain: semanticToolchain,
       source_binding: "VERIFIED",

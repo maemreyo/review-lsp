@@ -17,6 +17,7 @@ connection.onRequest("initialize", () => ({
     textDocumentSync: 1,
     hoverProvider: mode !== "unsupported",
     definitionProvider: true,
+    referencesProvider: mode !== "unsupported-references",
   },
   serverInfo: { name: "review-lsp-fake", version: "1" },
 }));
@@ -35,6 +36,13 @@ connection.onRequest("textDocument/hover", async () => {
 });
 
 connection.onRequest("textDocument/definition", () => null);
+connection.onRequest("textDocument/references", (params) => [{
+  uri: params.textDocument.uri,
+  range: {
+    start: { line: 0, character: params.context?.includeDeclaration ? 0 : 7 },
+    end: { line: 0, character: params.context?.includeDeclaration ? 5 : 12 },
+  },
+}]);
 connection.onRequest("shutdown", () => null);
 connection.onNotification("exit", () => process.exit(0));
 

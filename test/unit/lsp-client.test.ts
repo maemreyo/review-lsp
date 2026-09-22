@@ -97,6 +97,43 @@ describe("stdio LSP lifecycle fault injection", () => {
     expect(alive(pid!)).toBe(false);
   });
 
+  it("binds the references includeDeclaration option and refuses an unsupported references capability", async () => {
+    const rootDir = await root();
+    const driver = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env },
+      1_000,
+      200,
+    );
+    await driver.start();
+    const document = await open(driver, rootDir);
+    try {
+      const withoutDeclaration = await driver.references(document, 0, 13, false);
+      const withDeclaration = await driver.references(document, 0, 13, true);
+      expect(withoutDeclaration.value?.[0]?.range.start.character).toBe(7);
+      expect(withDeclaration.value?.[0]?.range.start.character).toBe(0);
+    } finally {
+      await driver.shutdown();
+    }
+
+    const unsupported = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env, REVIEW_LSP_FAKE_MODE: "unsupported-references" },
+      1_000,
+      200,
+    );
+    await unsupported.start();
+    const unsupportedDocument = await open(unsupported, rootDir);
+    try {
+      await expect(unsupported.references(unsupportedDocument, 0, 13, false))
+        .rejects.toMatchObject({ code: "LSP_CAPABILITY_UNSUPPORTED" });
+    } finally {
+      await unsupported.shutdown();
+    }
+  });
+
   it("fails closed when the language server crashes during a request", async () => {
     const rootDir = await root();
     const driver = new StdioLspDriver(
