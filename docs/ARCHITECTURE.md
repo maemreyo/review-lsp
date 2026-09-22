@@ -54,7 +54,7 @@ The environment manifest binds semantic inputs that can affect language-server b
 - isolation mode and isolation identity;
 - known limitations.
 
-If a required semantic input is not admitted, the environment remains `PARTIAL`; it is not silently treated as `VERIFIED`.
+For the admitted pnpm 10 subset, environment preparation can bind content-addressed dependency inputs, a sealed dependency snapshot, an execution projection, constrained derived declarations, and project-aligned TypeScript engine evidence. If a required semantic input is not admitted, the environment remains `PARTIAL`; it is not silently treated as `VERIFIED`.
 
 ### Semantic profile
 
@@ -89,9 +89,9 @@ The driver is transport/execution machinery, not evidence authority by itself.
 
 `src/core/session.ts`
 
-A semantic session composes candidate + environment + profile + LSP driver.
+A semantic session composes candidate + environment + profile + LSP driver. When dependency-aware execution is admitted, the language server runs against the bound semantic projection rather than ambient `node_modules`.
 
-Before a successful receipt is persisted, the session re-verifies candidate and profile integrity. Definition targets are classified against admitted source/toolchain roots.
+Before a successful receipt is persisted, the session re-verifies candidate, profile, dependency snapshot/projection and relevant toolchain integrity. Definition targets are classified against admitted candidate, dependency, derived-artifact and toolchain roots.
 
 ### Receipts
 
@@ -181,7 +181,7 @@ The alpha does not claim:
 
 - semantic correctness of the language server;
 - signed/remote-attested receipts;
-- dependency snapshot completeness;
+- universal dependency/project-shape completeness beyond the explicitly admitted snapshot/projection subset;
 - hostile-host protection;
 - live-workspace equivalence;
 - arbitrary language-server reproducibility.

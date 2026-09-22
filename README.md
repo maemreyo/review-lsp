@@ -177,7 +177,7 @@ See [compatibility evidence](docs/compatibility/0.1.0-alpha.3.md) and the [relea
 - Native mode is not a hostile-host sandbox.
 - A malicious container host administrator is outside the container profile's threat boundary.
 
-See [ROADMAP.md](ROADMAP.md) for likely next areas.
+See the [current support matrix](docs/status/CURRENT.md) for the exact alpha.3 boundary and [ROADMAP.md](ROADMAP.md) for likely next areas.
 
 ## Development
 
