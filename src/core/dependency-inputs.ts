@@ -1,3 +1,5 @@
+import { posix } from "node:path";
+
 import { readCandidateFile } from "./candidate.js";
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
 import { ReviewLspError } from "./errors.js";
@@ -42,6 +44,65 @@ function requireEntry(candidate: CandidateDescriptor, path: string): boolean {
 async function readInput(candidate: CandidateDescriptor, path: string): Promise<DependencyInputFile> {
   const { bytes, sha256: digest } = await readCandidateFile(candidate, path);
   return { path, sha256: digest, byte_count: bytes.byteLength };
+}
+
+function localFileReferences(lockfileText: string): string[] {
+  const references = new Set<string>();
+  for (const match of lockfileText.matchAll(/file:([^,\s}\]"']+)/g)) {
+    const value = match[1];
+    if (value) references.add(value);
+  }
+  return [...references].sort();
+}
+
+function localTarballPaths(
+  candidate: CandidateDescriptor,
+  workspaceManifests: string[],
+  lockfileText: string,
+): string[] {
+  const importerDirectories = [
+    ".",
+    ...workspaceManifests.map((path) => posix.dirname(path)),
+  ];
+  const resolved = new Set<string>();
+
+  for (const reference of localFileReferences(lockfileText)) {
+    if (!reference.endsWith(".tgz")) {
+      throw new ReviewLspError(
+        "DEPENDENCY_UNSUPPORTED",
+        `local file dependency ${JSON.stringify(reference)} is not an admitted .tgz artifact`,
+      );
+    }
+    if (reference.includes("\\") || posix.isAbsolute(reference)) {
+      throw new ReviewLspError(
+        "DEPENDENCY_UNSUPPORTED",
+        `local tarball dependency ${JSON.stringify(reference)} is not a portable candidate-relative path`,
+      );
+    }
+
+    const matches = new Set<string>();
+    for (const importerDirectory of importerDirectories) {
+      const candidatePath = posix.normalize(posix.join(importerDirectory, reference));
+      if (candidatePath === ".." || candidatePath.startsWith("../") || posix.isAbsolute(candidatePath)) continue;
+      if (requireEntry(candidate, candidatePath)) matches.add(candidatePath);
+    }
+
+    if (matches.size === 0) {
+      throw new ReviewLspError(
+        "DEPENDENCY_INPUT_INVALID",
+        `local tarball dependency ${JSON.stringify(reference)} does not resolve to an admitted candidate file`,
+      );
+    }
+    if (matches.size > 1) {
+      throw new ReviewLspError(
+        "DEPENDENCY_UNSUPPORTED",
+        `local tarball dependency ${JSON.stringify(reference)} resolves ambiguously inside the candidate: ${[...matches].join(", ")}`,
+      );
+    }
+    resolved.add([...matches][0]!);
+  }
+
+  return [...resolved].sort();
 }
 
 function parseJson(path: string, text: string): Record<string, unknown> {
@@ -244,6 +305,14 @@ export async function deriveDependencyInputs(candidate: CandidateDescriptor): Pr
 
   const workspaceManifests = workspaceManifestPaths(candidate, workspaceGlobs);
   for (const path of workspaceManifests) files.push(await readInput(candidate, path));
+
+  // pnpm needs candidate-contained local tarballs at their original relative paths while it
+  // evaluates the frozen lockfile. Bind those bytes into the dependency input identity and
+  // materialize them alongside manifests/lockfile during acquisition. Other local file
+  // dependency shapes remain unsupported rather than silently widening source authority.
+  for (const path of localTarballPaths(candidate, workspaceManifests, lockfileText)) {
+    files.push(await readInput(candidate, path));
+  }
 
   let npmrc: Record<string, string> = {};
   if (requireEntry(candidate, ".npmrc")) {

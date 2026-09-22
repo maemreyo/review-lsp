@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -48,6 +48,11 @@ export interface PnpmFixtureShape {
   workspaceGlobs?: string[];
   /** Replaces pnpm-workspace.yaml verbatim when provided. */
   workspaceYaml?: string;
+  /** Adds one candidate-contained local tarball-like file for lockfile input-binding tests. */
+  localTarball?: {
+    path: string;
+    contents?: string;
+  };
 }
 
 export interface PnpmFixture {
@@ -96,6 +101,12 @@ export async function createPnpmFixture(root: string, shape: PnpmFixtureShape = 
   if (shape.withPatch) {
     await mkdir(join(repo, "patches"), { recursive: true });
     await writeFile(join(repo, "patches", "is-number@7.0.0.patch"), "--- a/index.js\n+++ b/index.js\n");
+  }
+
+  if (shape.localTarball) {
+    const target = join(repo, shape.localTarball.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, shape.localTarball.contents ?? "fixture-tarball-bytes\n");
   }
 
   await writeFile(join(repo, "packages", "app", "package.json"), `${JSON.stringify({

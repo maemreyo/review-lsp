@@ -59,6 +59,82 @@ describe("dependency input derivation", () => {
     expect(inputs.project_toolchain.root_typescript).toBe("7.0.2");
   });
 
+  it("binds candidate-contained local tarballs referenced by the lockfile", async () => {
+    const lockfile = [
+      "lockfileVersion: '9.0'",
+      "",
+      "importers:",
+      "",
+      "  .: {}",
+      "",
+      "  packages/app:",
+      "    dependencies:",
+      "      '@fixture/local':",
+      "        specifier: file:../../vendor/local-1.0.0.tgz",
+      "        version: file:vendor/local-1.0.0.tgz",
+      "",
+      "packages:",
+      "",
+      "  '@fixture/local@file:vendor/local-1.0.0.tgz':",
+      "    resolution: {tarball: file:vendor/local-1.0.0.tgz}",
+      "",
+      "snapshots:",
+      "",
+      "  '@fixture/local@file:vendor/local-1.0.0.tgz': {}",
+      "",
+    ].join("\n");
+
+    const first = await deriveDependencyInputs(await candidateFor({
+      lockfile,
+      localTarball: { path: "vendor/local-1.0.0.tgz", contents: "first\n" },
+    }));
+    const second = await deriveDependencyInputs(await candidateFor({
+      lockfile,
+      localTarball: { path: "vendor/local-1.0.0.tgz", contents: "second\n" },
+    }));
+
+    expect(first.files.map((file) => file.path)).toContain("vendor/local-1.0.0.tgz");
+    expect(first.files.filter((file) => file.path === "vendor/local-1.0.0.tgz")).toHaveLength(1);
+    expect(second.input_set_id).not.toBe(first.input_set_id);
+  });
+
+  it("fails closed when a lockfile local tarball is absent from candidate authority", async () => {
+    const lockfile = [
+      "lockfileVersion: '9.0'",
+      "",
+      "importers:",
+      "",
+      "  .: {}",
+      "",
+      "packages:",
+      "",
+      "  '@fixture/local@file:vendor/missing-1.0.0.tgz':",
+      "    resolution: {tarball: file:vendor/missing-1.0.0.tgz}",
+      "",
+    ].join("\n");
+
+    await expect(deriveDependencyInputs(await candidateFor({ lockfile })))
+      .rejects.toThrow(/DEPENDENCY_INPUT_INVALID.*local tarball dependency/);
+  });
+
+  it("fails closed for non-tarball local file dependencies", async () => {
+    const lockfile = [
+      "lockfileVersion: '9.0'",
+      "",
+      "importers:",
+      "",
+      "  .:",
+      "    dependencies:",
+      "      '@fixture/local':",
+      "        specifier: file:vendor/local-package",
+      "        version: file:vendor/local-package",
+      "",
+    ].join("\n");
+
+    await expect(deriveDependencyInputs(await candidateFor({ lockfile })))
+      .rejects.toThrow(/DEPENDENCY_UNSUPPORTED.*not an admitted \.tgz artifact/);
+  });
+
   it("binds referenced patch files", async () => {
     const inputs = await deriveDependencyInputs(await candidateFor({ withPatch: true }));
     expect(inputs.patches.map((patch) => patch.path)).toEqual(["patches/is-number@7.0.0.patch"]);
