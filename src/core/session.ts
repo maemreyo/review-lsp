@@ -73,6 +73,15 @@ export interface DiagnosticsQueryInput {
   path: string;
 }
 
+const diagnosticsCoreQuery = Symbol("review-lsp.diagnostics-core-query");
+
+export async function queryDiagnosticsCore(
+  session: SemanticSession,
+  input: DiagnosticsQueryInput,
+): Promise<DiagnosticsReceipt> {
+  return session[diagnosticsCoreQuery](input);
+}
+
 function admittedCandidatePath(candidate: CandidateDescriptor, path: string): string {
   if (!path || path.includes("\0") || isAbsolute(path)) {
     throw new ReviewLspError("CANDIDATE_PATH_INVALID", `invalid candidate path ${JSON.stringify(path)}`);
@@ -641,7 +650,7 @@ export class SemanticSession {
     return this.query("references", input);
   }
 
-  async diagnostics(input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
+  async [diagnosticsCoreQuery](input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
     return this.queryDiagnostics(input);
   }
 

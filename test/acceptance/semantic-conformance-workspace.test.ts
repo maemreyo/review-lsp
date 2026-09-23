@@ -26,7 +26,7 @@ import { removeDependencySnapshot } from "../../src/core/dependency-snapshot.js"
 import { deriveWorkspaceArtifact } from "../../src/core/derived-artifact.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { buildProjection, removeProjection } from "../../src/core/projection.js";
-import { SemanticSession } from "../../src/core/session.js";
+import { queryDiagnosticsCore, SemanticSession } from "../../src/core/session.js";
 import { resolveProjectForDocument } from "../../src/core/toolchain.js";
 import type {
   CandidateDescriptor,
@@ -406,7 +406,7 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
 
       const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
-        admitted.diagnostics({ path: "packages/app/src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "packages/app/src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
       expect(referenceDiagnostics.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
@@ -649,7 +649,7 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
 
       const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
-        admitted.diagnostics({ path: "src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
       expect(referenceDiagnostics.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");

@@ -14,7 +14,7 @@ import { scanDependencyTree } from "../../src/core/dependency-tree.js";
 import { removeDependencySnapshot } from "../../src/core/dependency-snapshot.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { buildProjection, removeProjection } from "../../src/core/projection.js";
-import { SemanticSession } from "../../src/core/session.js";
+import { queryDiagnosticsCore, SemanticSession } from "../../src/core/session.js";
 import { resolveProjectForDocument } from "../../src/core/toolchain.js";
 import type {
   CandidateDescriptor,
@@ -315,7 +315,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
 
       const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
-        admitted.diagnostics({ path: "src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
       expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
@@ -425,7 +425,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
 
       const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
-        admitted.diagnostics({ path: "src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
       expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
@@ -490,7 +490,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         languageId: "typescript",
       });
       const [receipt, raw] = await Promise.all([
-        admitted.diagnostics({ path: "src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
 
@@ -542,7 +542,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         path: "src/main.ts",
       });
 
-      const repeated = await admitted.diagnostics({ path: "src/main.ts" });
+      const repeated = await queryDiagnosticsCore(admitted, { path: "src/main.ts" });
       expect(repeated.result).toEqual(receipt.result);
       expect(repeated.candidate).toEqual(receipt.candidate);
       expect(repeated.environment_manifest_sha256).toBe(receipt.environment_manifest_sha256);
@@ -598,7 +598,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     });
 
     try {
-      const receipt = await admitted.diagnostics({ path: "src/main.ts" });
+      const receipt = await queryDiagnosticsCore(admitted, { path: "src/main.ts" });
       expect(receipt.environment_binding).toBe("PARTIAL");
       expect(receipt.result).toHaveLength(1);
       expect(receipt.result[0]?.related_information[0]).toMatchObject({
@@ -631,7 +631,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         protocolOperations: ["textDocument/diagnostic"],
         durationMs: 1,
       });
-      await expect(admitted.diagnostics({ path: "src/main.ts" }))
+      await expect(queryDiagnosticsCore(admitted, { path: "src/main.ts" }))
         .rejects.toMatchObject({ code: "LSP_PROTOCOL_ERROR" });
     } finally {
       diagnosticSpy.mockRestore();
@@ -701,7 +701,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         languageId: "typescript",
       });
       const [receipt, raw] = await Promise.all([
-        admitted.diagnostics({ path: "src/main.ts" }),
+        queryDiagnosticsCore(admitted, { path: "src/main.ts" }),
         reference.diagnostics(referenceDocument),
       ]);
 
@@ -729,7 +729,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
         deprecated: rawDiagnostic.tags?.includes(2) ?? false,
       });
 
-      const repeated = await admitted.diagnostics({ path: "src/main.ts" });
+      const repeated = await queryDiagnosticsCore(admitted, { path: "src/main.ts" });
       expect(repeated.result).toEqual(receipt.result);
       expect(repeated.semantic_toolchain).toEqual(receipt.semantic_toolchain);
       expect(repeated.session_id).toBe(receipt.session_id);
