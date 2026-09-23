@@ -473,8 +473,11 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
 
     const projectA = await resolveProjectForDocument(candidate, "packages/a/src/main.ts");
     const projectB = await resolveProjectForDocument(candidate, "packages/b/src/main.ts");
-    expect(projectA.config_path).toBe("packages/a/tsconfig.json");
-    expect(projectB.config_path).toBe("packages/b/tsconfig.json");
+    expect(projectA).toMatchObject({ state: "RESOLVED", config_path: "packages/a/tsconfig.json" });
+    expect(projectB).toMatchObject({ state: "RESOLVED", config_path: "packages/b/tsconfig.json" });
+    expect(projectA.ownership_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(projectB.ownership_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(projectA.ownership_sha256).not.toBe(projectB.ownership_sha256);
 
     const [sessionA, sessionB] = await Promise.all([
       SemanticSession.create({
@@ -526,6 +529,9 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       expect(receiptA.result).toEqual(referenceA.value);
       expect(receiptB.result).toEqual(referenceB.value);
       expect(referenceA.value).not.toEqual(referenceB.value);
+
+      await expect(sessionA.hover({ path: "packages/b/src/main.ts", line: 1, character: position }))
+        .rejects.toThrow(/PROFILE_INVALID.*different resolving project/);
     } finally {
       await Promise.all([sessionA.close(), sessionB.close(), reference.shutdown()]);
     }

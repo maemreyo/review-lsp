@@ -72,6 +72,8 @@ async function exactProjectFixture(options: {
   valueSource?: string;
   mainSource?: string;
   projectReferences?: boolean;
+  inheritedOwnership?: boolean;
+  overlappingOwnership?: boolean;
 } = {}): Promise<{
   root: string;
   referenceRoot: string;
@@ -106,16 +108,30 @@ async function exactProjectFixture(options: {
     packageManager: "pnpm@10.20.0",
     devDependencies: { typescript: engineVersion },
   }, null, 2) + "\n";
-  const tsconfig = JSON.stringify({
-    compilerOptions: {
-      strict: true,
-      target: "ES2022",
-      module: "ESNext",
-      moduleResolution: "Bundler",
-      noEmit: true,
-    },
-    include: ["src/**/*.ts"],
-    ...(options.projectReferences ? { references: [{ path: "./packages/lib" }] } : {}),
+  const compilerOptions = {
+    strict: true,
+    target: "ES2022",
+    module: "ESNext",
+    moduleResolution: "Bundler",
+    noEmit: true,
+  };
+  const tsconfig = JSON.stringify(options.inheritedOwnership
+    ? {
+        extends: "./configs/tsconfig.base.json",
+        ...(options.projectReferences ? { references: [{ path: "./packages/lib" }] } : {}),
+      }
+    : {
+        compilerOptions,
+        include: ["src/**/*.ts"],
+        ...(options.projectReferences ? { references: [{ path: "./packages/lib" }] } : {}),
+      }, null, 2) + "\n";
+  const inheritedBaseTsconfig = JSON.stringify({
+    compilerOptions,
+    include: ["../src/**/*.ts"],
+  }, null, 2) + "\n";
+  const overlappingTsconfig = JSON.stringify({
+    compilerOptions,
+    include: ["../../src/**/*.ts"],
   }, null, 2) + "\n";
   const referencedTsconfig = JSON.stringify({
     compilerOptions: {
@@ -150,6 +166,14 @@ async function exactProjectFixture(options: {
     await writeFile(join(base, "tsconfig.json"), tsconfig);
     await writeFile(join(base, "src", "value.ts"), valueSource);
     await writeFile(join(base, "src", "main.ts"), mainSource);
+    if (options.inheritedOwnership) {
+      await mkdir(join(base, "configs"), { recursive: true });
+      await writeFile(join(base, "configs", "tsconfig.base.json"), inheritedBaseTsconfig);
+    }
+    if (options.overlappingOwnership) {
+      await mkdir(join(base, "packages", "overlap"), { recursive: true });
+      await writeFile(join(base, "packages", "overlap", "tsconfig.json"), overlappingTsconfig);
+    }
     if (options.projectReferences) {
       await mkdir(join(base, "packages", "lib", "src"), { recursive: true });
       await writeFile(join(base, "packages", "lib", "tsconfig.json"), referencedTsconfig);
@@ -480,9 +504,16 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     expect(environment.project_references.configs).toHaveLength(1);
     expect(environment.project_references.configs[0]?.references[0]?.resolved_config_path)
       .toBe("packages/lib/tsconfig.json");
+    expect(environment.project_ownership.state).toBe("BOUND");
+    expect(environment.project_ownership.model_sha256).toMatch(/^[0-9a-f]{64}$/);
+    const rootOwnership = environment.project_ownership.configs.find((entry) => entry.path === "tsconfig.json");
+    expect(rootOwnership).toMatchObject({ routable_project: true, routing_reason: "CONVENTIONAL_CONFIG" });
+    expect(rootOwnership?.membership_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(environment.binding).toBe("VERIFIED");
 
     const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
+    expect(resolvingProject).toMatchObject({ state: "RESOLVED", config_path: "tsconfig.json" });
+    expect(resolvingProject.ownership_sha256).toBe(rootOwnership?.membership_sha256);
     const admitted = await SemanticSession.create({
       candidate,
       profile,
@@ -502,9 +533,98 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       expect(receipt.source_binding).toBe("VERIFIED");
       expect(receipt.environment_binding).toBe("VERIFIED");
       expect(receipt.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+      expect(receipt.semantic_toolchain.resolving_project).toMatchObject({
+        state: "RESOLVED",
+        config_path: "tsconfig.json",
+        ownership_sha256: rootOwnership?.membership_sha256,
+      });
     } finally {
       await admitted.close();
     }
+  }, 120_000);
+
+  it.each([
+    ["TypeScript 6", "typescript" as const],
+    ["TypeScript 7", "typescript7" as const],
+  ])("routes inherited project ownership under %s exact-engine semantics", async (_label, enginePackage) => {
+    const { candidate, snapshot, projection, state, profile } = await exactProjectFixture({
+      enginePackage,
+      inheritedOwnership: true,
+    });
+    const environment = await buildEnvironmentManifest(candidate, profile, { snapshot, projection });
+    expect(environment.binding).toBe("VERIFIED");
+    expect(environment.project_ownership.state).toBe("BOUND");
+
+    const baseOwnership = environment.project_ownership.configs.find((entry) => entry.path === "configs/tsconfig.base.json");
+    const rootOwnership = environment.project_ownership.configs.find((entry) => entry.path === "tsconfig.json");
+    expect(baseOwnership).toMatchObject({
+      routable_project: false,
+      routing_reason: "INHERITANCE_ONLY",
+    });
+    expect(rootOwnership).toMatchObject({
+      routable_project: true,
+      routing_reason: "CONVENTIONAL_CONFIG",
+      effective_include: expect.objectContaining({
+        origin_config_path: "configs/tsconfig.base.json",
+        values: ["src/**/*.ts"],
+      }),
+    });
+
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
+    expect(resolvingProject).toMatchObject({
+      state: "RESOLVED",
+      config_path: "tsconfig.json",
+      ownership_sha256: rootOwnership?.membership_sha256,
+    });
+
+    const admitted = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+    try {
+      const receipt = await admitted.hover({
+        path: "src/main.ts",
+        line: 1,
+        character: "export const result = ".length,
+      });
+      expect(receipt.source_binding).toBe("VERIFIED");
+      expect(receipt.environment_binding).toBe("VERIFIED");
+      expect(receipt.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+      expect(receipt.semantic_toolchain.resolving_project.ownership_sha256)
+        .toBe(rootOwnership?.membership_sha256);
+    } finally {
+      await admitted.close();
+    }
+  }, 120_000);
+
+  it("fails closed when two admitted projects both own the queried document", async () => {
+    const { candidate, snapshot, projection, state, profile } = await exactProjectFixture({
+      overlappingOwnership: true,
+    });
+    const environment = await buildEnvironmentManifest(candidate, profile, { snapshot, projection });
+    expect(environment.project_ownership.state).toBe("BOUND");
+    expect(environment.binding).toBe("VERIFIED");
+
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
+    expect(resolvingProject.state).toBe("AMBIGUOUS");
+    expect(resolvingProject.candidate_configs?.map((entry) => entry.config_path)).toEqual([
+      "packages/overlap/tsconfig.json",
+      "tsconfig.json",
+    ]);
+    expect(resolvingProject.ownership_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    await expect(SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    })).rejects.toThrow(/ENVIRONMENT_PARTIAL.*owned by multiple admitted projects/);
   }, 120_000);
 
   it("matches TypeScript <=6 sync diagnostics for an error document and binds related information provenance", async () => {
