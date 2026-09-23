@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { buildContainerRunArgs, type ContainerRunSpec } from "../../src/core/container.js";
+import {
+  buildContainerDiagnosticsRunArgs,
+  buildContainerRunArgs,
+  type ContainerDiagnosticsRunSpec,
+  type ContainerRunSpec,
+} from "../../src/core/container.js";
+
+const imageId = "sha256:" + "a".repeat(64);
 
 const base: ContainerRunSpec = {
-  imageId: "sha256:" + "a".repeat(64),
+  imageId,
   operation: "hover",
   path: "src/main.ts",
   line: 1,
@@ -96,6 +103,29 @@ describe("container execution profile", () => {
       .toThrow(/requires includeDeclaration/);
     expect(() => buildContainerRunArgs({ ...base, operation: "hover", includeDeclaration: true }))
       .toThrow(/must not set includeDeclaration/);
+  });
+
+  it("runs document diagnostics without synthetic coordinates under the same isolation contract", () => {
+    const spec: ContainerDiagnosticsRunSpec = {
+      imageId,
+      path: "src/main.ts",
+      mounts: base.mounts,
+      descriptorPath: base.descriptorPath,
+      containerRoot: base.containerRoot,
+    };
+    const args = buildContainerDiagnosticsRunArgs(spec);
+    const commandIndex = args.indexOf("__container-diagnostics");
+    expect(commandIndex).toBeGreaterThan(0);
+    expect(args.slice(commandIndex)).toEqual([
+      "__container-diagnostics",
+      "/input/candidate.json",
+      "src/main.ts",
+      "--state",
+      "/state",
+    ]);
+    expect(valueAfter(args, "--network")).toBe("none");
+    expect(args).toContain("--read-only");
+    expect(valueAfter(args, "--cap-drop")).toBe("ALL");
   });
 
   it("refuses a host path the mount encoder cannot represent unambiguously", () => {

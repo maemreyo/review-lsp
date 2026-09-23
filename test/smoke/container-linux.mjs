@@ -89,6 +89,29 @@ try {
     throw new Error(`container returned wrong candidate semantics: ${resultText}`);
   }
 
+  const diagnostics = JSON.parse((await run(process.execPath, [
+    cli,
+    "container-diagnostics",
+    image,
+    descriptor,
+    "src/main.ts",
+    "--state",
+    state,
+  ], { timeout: 240_000 })).stdout);
+  if (diagnostics.image_id !== imageId
+    || diagnostics.receipt?.operation !== "diagnostics"
+    || diagnostics.receipt?.request?.scope !== "document"
+    || diagnostics.receipt?.document?.path !== "src/main.ts"
+    || diagnostics.receipt?.isolation !== "CONTAINER_READ_ONLY"
+    || diagnostics.receipt?.source_binding !== "VERIFIED"
+    || diagnostics.receipt?.environment_binding !== "VERIFIED"
+    || !Array.isArray(diagnostics.receipt?.result)) {
+    throw new Error(`container diagnostics binding mismatch: ${JSON.stringify(diagnostics)}`);
+  }
+  if (diagnostics.environment?.isolation_identity !== `docker:${imageId}`) {
+    throw new Error(`container diagnostics environment mismatch: ${JSON.stringify(diagnostics.environment)}`);
+  }
+
   await run(process.execPath, [cli, "close", descriptor, "--state", state]);
   process.stdout.write(JSON.stringify({
     ok: true,
@@ -100,6 +123,8 @@ try {
     isolation: queried.receipt.isolation,
     source_binding: queried.receipt.source_binding,
     environment_binding: queried.receipt.environment_binding,
+    diagnostics_operation: diagnostics.receipt.operation,
+    diagnostics_transport: diagnostics.receipt.transport?.kind,
   }, null, 2) + "\n");
 } finally {
   await rm(scratch, { recursive: true, force: true }).catch(() => undefined);

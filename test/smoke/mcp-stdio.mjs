@@ -62,7 +62,7 @@ try {
 
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  const expected = ["review_lsp_candidate_info", "review_lsp_definition", "review_lsp_hover", "review_lsp_references"];
+  const expected = ["review_lsp_candidate_info", "review_lsp_definition", "review_lsp_diagnostics", "review_lsp_hover", "review_lsp_references"];
   if (JSON.stringify(names) !== JSON.stringify(expected)) {
     throw new Error(`unexpected MCP tools: ${JSON.stringify(names)}`);
   }
@@ -76,8 +76,10 @@ try {
   if (structured.commit_oid !== commit || structured.environment_binding !== "VERIFIED") {
     throw new Error(`candidate_info binding mismatch: ${JSON.stringify(structured)}`);
   }
-  if (!Array.isArray(structured.capabilities) || !structured.capabilities.includes("references")) {
-    throw new Error(`candidate_info omitted references capability: ${JSON.stringify(structured.capabilities)}`);
+  if (!Array.isArray(structured.capabilities)
+    || !structured.capabilities.includes("references")
+    || !structured.capabilities.includes("diagnostics")) {
+    throw new Error(`candidate_info omitted semantic capabilities: ${JSON.stringify(structured.capabilities)}`);
   }
 
   const hovers = await Promise.all(Array.from({ length: 4 }, () => client.callTool({
@@ -119,6 +121,25 @@ try {
   }
   if (referenceReceipt?.session_id !== structured.session_id) {
     throw new Error(`references did not reuse the bound runtime: ${referenceReceipt?.session_id}`);
+  }
+
+  const diagnostics = await client.callTool({
+    name: "review_lsp_diagnostics",
+    arguments: {
+      expected_candidate_id: structured.candidate_id,
+      path: "src/main.ts",
+    },
+  });
+  if (diagnostics.isError) throw new Error(`diagnostics failed: ${JSON.stringify(diagnostics.content)}`);
+  const diagnosticsReceipt = diagnostics.structuredContent;
+  if (diagnosticsReceipt?.operation !== "diagnostics"
+    || diagnosticsReceipt?.request?.scope !== "document"
+    || diagnosticsReceipt?.document?.path !== "src/main.ts"
+    || !Array.isArray(diagnosticsReceipt?.result)) {
+    throw new Error(`diagnostics receipt was not candidate-bound: ${JSON.stringify(diagnosticsReceipt)}`);
+  }
+  if (diagnosticsReceipt?.session_id !== structured.session_id) {
+    throw new Error(`diagnostics did not reuse the bound runtime: ${diagnosticsReceipt?.session_id}`);
   }
 
   const mismatch = await client.callTool({

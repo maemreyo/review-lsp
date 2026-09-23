@@ -5,7 +5,12 @@ import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadAndVerifyArtifactManifest } from "./core/artifact.js";
-import { containerImageIdFromEnvironment, runDockerSemanticQuery, verifyLinuxReadOnlyMount } from "./core/container.js";
+import {
+  containerImageIdFromEnvironment,
+  runDockerDiagnostics,
+  runDockerSemanticQuery,
+  verifyLinuxReadOnlyMount,
+} from "./core/container.js";
 import {
   candidateDescriptorPath,
   loadCandidateDescriptor,
@@ -18,7 +23,12 @@ import { prepareSemanticEnvironment } from "./core/semantic-environment.js";
 import { resolveProjectForDocument, resolvingProjectIdentity } from "./core/toolchain.js";
 import { ReviewLspError } from "./core/errors.js";
 import { createTypeScriptProfile } from "./core/profile.js";
-import { receiptPath, validateReceiptFile } from "./core/receipts.js";
+import {
+  diagnosticsReceiptPath,
+  receiptPath,
+  validateDiagnosticsReceiptFile,
+  validateReceiptFile,
+} from "./core/receipts.js";
 import { SemanticRuntimeManager } from "./core/runtime.js";
 import { SemanticSession } from "./core/session.js";
 import { serveCandidateMcp } from "./mcp/server.js";
@@ -103,7 +113,9 @@ function usage(): never {
     "  review-lsp dependency-inputs <candidate.json>",
     "  review-lsp acquire <candidate.json> [--state DIR] [--allow-network]",
     "  review-lsp query <candidate.json> <hover|definition|references> <path> <line> <character> [--include-declaration true|false] [--state DIR]",
+    "  review-lsp diagnostics <candidate.json> <path> [--state DIR]",
     "  review-lsp container-query <image> <candidate.json> <hover|definition|references> <path> <line> <character> [--include-declaration true|false] [--state DIR]",
+    "  review-lsp container-diagnostics <image> <candidate.json> <path> [--state DIR]",
     "  review-lsp validate <receipt.json>",
     "  review-lsp close <candidate.json>",
     "  review-lsp serve <repo> <commit> [--state DIR]",
@@ -198,7 +210,11 @@ async function main(): Promise<void> {
   if (command === "validate") {
     const [path] = args;
     if (!path || args.length !== 1) usage();
-    const receipt = await validateReceiptFile(resolve(path));
+    const absolute = resolve(path);
+    const raw = JSON.parse(await readFile(absolute, "utf8")) as { schema_version?: unknown };
+    const receipt = raw.schema_version === "review-lsp.diagnostics-receipt.v1"
+      ? await validateDiagnosticsReceiptFile(absolute)
+      : await validateReceiptFile(absolute);
     process.stdout.write(`${JSON.stringify({ valid: true, receipt_id: receipt.receipt_id }, null, 2)}\n`);
     return;
   }
@@ -209,6 +225,25 @@ async function main(): Promise<void> {
     const candidate = await loadCandidateDescriptor(resolve(descriptor));
     await removeCandidate(candidate);
     process.stdout.write(`${JSON.stringify({ removed: true, candidate_id: candidate.candidate_id })}\n`);
+    return;
+  }
+
+  if (command === "container-diagnostics") {
+    const [image, descriptor, path] = args;
+    if (!image || !descriptor || !path || args.length !== 3) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    const container = await runDockerDiagnostics({
+      candidate,
+      path,
+      image,
+      stateDirectory,
+    });
+    process.stdout.write(`${JSON.stringify({
+      receipt_path: diagnosticsReceiptPath(stateDirectory, container.receipt),
+      receipt: container.receipt,
+      environment: container.environment,
+      image_id: container.image_id,
+    }, null, 2)}\n`);
     return;
   }
 
@@ -238,6 +273,34 @@ async function main(): Promise<void> {
       environment: container.environment,
       image_id: container.image_id,
     }, null, 2)}\n`);
+    return;
+  }
+
+  if (command === "__container-diagnostics") {
+    const [descriptor, path] = args;
+    if (!descriptor || !path || args.length !== 2) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    await verifyLinuxReadOnlyMount(candidate.source_root);
+    const imageId = containerImageIdFromEnvironment();
+    const profile = await createTypeScriptProfile();
+    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const session = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory,
+      isolation: "CONTAINER_READ_ONLY",
+      isolationIdentity: `docker:${imageId}`,
+      resolvingProject,
+    });
+    try {
+      const receipt = await session.diagnostics({ path });
+      process.stdout.write(`${JSON.stringify({
+        receipt,
+        environment: session.environment,
+      }, null, 2)}\n`);
+    } finally {
+      await session.close();
+    }
     return;
   }
 
@@ -273,6 +336,43 @@ async function main(): Promise<void> {
       process.stdout.write(`${JSON.stringify({
         receipt,
         environment: session.environment,
+      }, null, 2)}\n`);
+    } finally {
+      await session.close();
+    }
+    return;
+  }
+
+  if (command === "diagnostics") {
+    const [descriptor, path] = args;
+    if (!descriptor || !path || args.length !== 2) usage();
+    const candidate = await loadCandidateDescriptor(resolve(descriptor));
+    const inferredState = resolve(candidate.source_root, "..", "..", "..");
+    const queryState = stateOverride ? stateDirectory : inferredState;
+    const profile = await createTypeScriptProfile();
+    const environment = await prepareSemanticEnvironment({
+      candidate,
+      stateDirectory: queryState,
+    });
+    const { snapshot, projection } = environment;
+    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const session = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: queryState,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+    try {
+      const info = await session.candidateInfo();
+      if (!info.capabilities.includes("diagnostics")) {
+        throw new ReviewLspError("LSP_CAPABILITY_UNSUPPORTED", "initialized semantic engine does not admit deterministic diagnostics");
+      }
+      const receipt = await session.diagnostics({ path });
+      process.stdout.write(`${JSON.stringify({
+        receipt_path: diagnosticsReceiptPath(queryState, receipt),
+        receipt,
       }, null, 2)}\n`);
     } finally {
       await session.close();

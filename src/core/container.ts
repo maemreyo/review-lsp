@@ -5,8 +5,13 @@ import { promisify } from "node:util";
 
 import { canonicalJson, sha256 } from "./canonical.js";
 import { ReviewLspError } from "./errors.js";
-import { persistReceipt, validateReceipt } from "./receipts.js";
-import type { CandidateDescriptor, EnvironmentManifest, SemanticReceipt } from "./types.js";
+import {
+  persistDiagnosticsReceipt,
+  persistReceipt,
+  validateDiagnosticsReceipt,
+  validateReceipt,
+} from "./receipts.js";
+import type { CandidateDescriptor, DiagnosticsReceipt, EnvironmentManifest, SemanticReceipt } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const IMAGE_ID_RE = /^sha256:[0-9a-f]{64}$/;
@@ -129,13 +134,8 @@ export interface ContainerMount {
   label: string;
 }
 
-export interface ContainerRunSpec {
+interface ContainerIsolationSpec {
   imageId: string;
-  operation: "hover" | "definition" | "references";
-  path: string;
-  line: number;
-  character: number;
-  includeDeclaration?: boolean;
   /** Read-only mounts: candidate source or projection, dependency snapshot, derived artifacts. */
   mounts: ContainerMount[];
   descriptorPath: string;
@@ -143,24 +143,20 @@ export interface ContainerRunSpec {
   containerRoot: string;
 }
 
-/**
- * Builds the full `docker run` argument list for one semantic query.
- *
- * Kept pure and exported so the isolation itself is testable. The container profile is the
- * only execution profile this project treats as enforced, and what makes it enforced is
- * exactly this argument list: no network, read-only root, all capabilities dropped, no
- * privilege escalation, a non-root user, bounded resources, and every mount read-only. A
- * regression in any one of those is a silent loss of the property the profile is admitted
- * for, so each is asserted rather than assumed.
- */
-export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
+export interface ContainerRunSpec extends ContainerIsolationSpec {
+  operation: "hover" | "definition" | "references";
+  path: string;
+  line: number;
+  character: number;
+  includeDeclaration?: boolean;
+}
+
+export interface ContainerDiagnosticsRunSpec extends ContainerIsolationSpec {
+  path: string;
+}
+
+function buildContainerIsolationArgs(spec: ContainerIsolationSpec): string[] {
   requireMountSafeHostPath(spec.descriptorPath, "container descriptor path");
-  if (spec.operation === "references" && typeof spec.includeDeclaration !== "boolean") {
-    throw new ReviewLspError("RECEIPT_INVALID", "container references query requires includeDeclaration");
-  }
-  if (spec.operation !== "references" && spec.includeDeclaration !== undefined) {
-    throw new ReviewLspError("RECEIPT_INVALID", `${spec.operation} container query must not set includeDeclaration`);
-  }
   for (const mount of spec.mounts) {
     requireMountSafeHostPath(mount.source, mount.label);
     if (!mount.destination.startsWith("/")) {
@@ -193,6 +189,22 @@ export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
     "--mount", `type=bind,src=${spec.descriptorPath},dst=/input/candidate.json,readonly`,
     "--env", `REVIEW_LSP_CONTAINER_IMAGE_ID=${spec.imageId}`,
     spec.imageId,
+  ];
+}
+
+/**
+ * Builds the full `docker run` argument list for one semantic point query.
+ */
+export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
+  if (spec.operation === "references" && typeof spec.includeDeclaration !== "boolean") {
+    throw new ReviewLspError("RECEIPT_INVALID", "container references query requires includeDeclaration");
+  }
+  if (spec.operation !== "references" && spec.includeDeclaration !== undefined) {
+    throw new ReviewLspError("RECEIPT_INVALID", `${spec.operation} container query must not set includeDeclaration`);
+  }
+
+  return [
+    ...buildContainerIsolationArgs(spec),
     "__container-query",
     "/input/candidate.json",
     spec.operation,
@@ -207,33 +219,28 @@ export function buildContainerRunArgs(spec: ContainerRunSpec): string[] {
   ];
 }
 
-function assertContainerReceipt(input: {
-  receipt: SemanticReceipt;
+export function buildContainerDiagnosticsRunArgs(spec: ContainerDiagnosticsRunSpec): string[] {
+  return [
+    ...buildContainerIsolationArgs(spec),
+    "__container-diagnostics",
+    "/input/candidate.json",
+    spec.path,
+    "--state",
+    "/state",
+  ];
+}
+
+function assertContainerCommonReceipt(input: {
+  receipt: SemanticReceipt | DiagnosticsReceipt;
   environment: EnvironmentManifest;
   candidate: CandidateDescriptor;
-  operation: "hover" | "definition" | "references";
-  path: string;
-  line: number;
-  character: number;
-  includeDeclaration?: boolean;
   imageId: string;
 }): void {
-  validateReceipt(input.receipt);
   if (input.receipt.candidate.candidate_id !== input.candidate.candidate_id
     || input.receipt.candidate.commit_oid !== input.candidate.commit_oid
     || input.receipt.candidate.tree_oid !== input.candidate.tree_oid
     || input.receipt.candidate.source_manifest_sha256 !== input.candidate.source_manifest_sha256) {
     throw new ReviewLspError("CANDIDATE_MISMATCH", "container receipt candidate identity differs from host candidate");
-  }
-  if (input.receipt.operation !== input.operation
-    || input.receipt.document.path !== input.path
-    || input.receipt.request.line !== input.line
-    || input.receipt.request.character !== input.character
-    || (input.operation === "references"
-      && input.receipt.request.include_declaration !== input.includeDeclaration)
-    || (input.operation !== "references"
-      && input.receipt.request.include_declaration !== undefined)) {
-    throw new ReviewLspError("RECEIPT_INVALID", "container receipt operation/document/request differs from host request");
   }
   if (input.receipt.source_binding !== "VERIFIED"
     || input.receipt.isolation !== "CONTAINER_READ_ONLY") {
@@ -261,6 +268,47 @@ function assertContainerReceipt(input: {
       "CONTAINER_ISOLATION_INVALID",
       `container environment is not bound to candidate/image isolation ${expectedIsolationIdentity}`,
     );
+  }
+}
+
+function assertContainerReceipt(input: {
+  receipt: SemanticReceipt;
+  environment: EnvironmentManifest;
+  candidate: CandidateDescriptor;
+  operation: "hover" | "definition" | "references";
+  path: string;
+  line: number;
+  character: number;
+  includeDeclaration?: boolean;
+  imageId: string;
+}): void {
+  validateReceipt(input.receipt);
+  assertContainerCommonReceipt(input);
+  if (input.receipt.operation !== input.operation
+    || input.receipt.document.path !== input.path
+    || input.receipt.request.line !== input.line
+    || input.receipt.request.character !== input.character
+    || (input.operation === "references"
+      && input.receipt.request.include_declaration !== input.includeDeclaration)
+    || (input.operation !== "references"
+      && input.receipt.request.include_declaration !== undefined)) {
+    throw new ReviewLspError("RECEIPT_INVALID", "container receipt operation/document/request differs from host request");
+  }
+}
+
+function assertContainerDiagnosticsReceipt(input: {
+  receipt: DiagnosticsReceipt;
+  environment: EnvironmentManifest;
+  candidate: CandidateDescriptor;
+  path: string;
+  imageId: string;
+}): void {
+  validateDiagnosticsReceipt(input.receipt);
+  assertContainerCommonReceipt(input);
+  if (input.receipt.operation !== "diagnostics"
+    || input.receipt.document.path !== input.path
+    || input.receipt.request.scope !== "document") {
+    throw new ReviewLspError("RECEIPT_INVALID", "container diagnostics receipt operation/document/request differs from host request");
   }
 }
 
@@ -348,6 +396,78 @@ export async function runDockerSemanticQuery(input: {
     const persisted = await persistReceipt(input.stateDirectory, stable);
     if (persisted.receipt_id !== expectedReceiptId) {
       throw new ReviewLspError("RECEIPT_INVALID", "host-persisted container receipt identity changed");
+    }
+    return { receipt: persisted, environment, image_id: imageId };
+  } finally {
+    await rm(runRoot, { recursive: true, force: true });
+  }
+}
+
+export interface DockerDiagnosticsResult {
+  receipt: DiagnosticsReceipt;
+  environment: EnvironmentManifest;
+  image_id: string;
+}
+
+export async function runDockerDiagnostics(input: {
+  candidate: CandidateDescriptor;
+  path: string;
+  image: string;
+  stateDirectory: string;
+  timeoutMs?: number;
+  dependencyRoot?: string | undefined;
+}): Promise<DockerDiagnosticsResult> {
+  const path = assertedRelativePath(input.path);
+  const imageId = await resolveDockerImageId(input.image);
+  const sourceRoot = await realpath(input.candidate.source_root);
+
+  const runRootParent = join(input.stateDirectory, "container-runs");
+  await mkdir(runRootParent, { recursive: true, mode: 0o700 });
+  const runRoot = await mkdtemp(join(runRootParent, "run-"));
+  const descriptorPath = join(runRoot, "candidate.json");
+  requireMountSafeHostPath(descriptorPath, "container descriptor path");
+
+  const containerCandidate: CandidateDescriptor = {
+    ...input.candidate,
+    source_root: "/candidate",
+  };
+  await writeFile(descriptorPath, `${JSON.stringify(containerCandidate, null, 2)}\n`, { mode: 0o444, flag: "wx" });
+
+  try {
+    const args = buildContainerDiagnosticsRunArgs({
+      imageId,
+      path,
+      mounts: [
+        { source: sourceRoot, destination: "/candidate", label: "candidate source root" },
+        ...(input.dependencyRoot
+          ? [{ source: input.dependencyRoot, destination: "/dependencies", label: "dependency snapshot root" }]
+          : []),
+      ],
+      descriptorPath,
+      containerRoot: "/candidate",
+    });
+    const { stdout } = await docker(args, { timeoutMs: input.timeoutMs ?? 120_000 });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch (error) {
+      throw new ReviewLspError("CONTAINER_EXECUTION_FAILED", `container returned invalid JSON: ${String(error)}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("receipt" in parsed) || !("environment" in parsed)) {
+      throw new ReviewLspError("CONTAINER_EXECUTION_FAILED", "container diagnostics output omitted receipt/environment");
+    }
+    const { receipt, environment } = parsed as { receipt: DiagnosticsReceipt; environment: EnvironmentManifest };
+    assertContainerDiagnosticsReceipt({
+      receipt,
+      environment,
+      candidate: input.candidate,
+      path,
+      imageId,
+    });
+    const { receipt_id: expectedReceiptId, ...stable } = receipt;
+    const persisted = await persistDiagnosticsReceipt(input.stateDirectory, stable);
+    if (persisted.receipt_id !== expectedReceiptId) {
+      throw new ReviewLspError("RECEIPT_INVALID", "host-persisted container diagnostics receipt identity changed");
     }
     return { receipt: persisted, environment, image_id: imageId };
   } finally {

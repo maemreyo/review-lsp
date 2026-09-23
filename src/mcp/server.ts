@@ -184,6 +184,30 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     }
   });
 
+  server.registerTool("review_lsp_diagnostics", {
+    description: "Return candidate-bound document diagnostics from the deterministic engine transport admitted for this exact candidate.",
+    inputSchema: {
+      expected_candidate_id: z.string().min(1),
+      path: z.string().min(1),
+    },
+  }, async ({ expected_candidate_id, path }) => {
+    let lease;
+    try {
+      requireCandidate(host, expected_candidate_id);
+      const project = resolveProjectForDocument(host.candidate, path);
+      lease = await acquireHostRuntime(host, project);
+      const info = await lease.session.candidateInfo();
+      if (!info.capabilities.includes("diagnostics")) {
+        throw new ReviewLspError("LSP_CAPABILITY_UNSUPPORTED", "initialized semantic engine does not admit deterministic diagnostics");
+      }
+      return jsonResult(await lease.session.diagnostics({ path }));
+    } catch (error) {
+      return errorResult(error);
+    } finally {
+      lease?.release();
+    }
+  });
+
   const transport = new StdioServerTransport(process.stdin, process.stdout, { maxBufferSize: 1024 * 1024 });
   transport.onerror = (error) => {
     process.stderr.write(`review-lsp MCP transport error: ${error.message}\n`);

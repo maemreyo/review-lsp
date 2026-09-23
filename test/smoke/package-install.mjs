@@ -168,9 +168,40 @@ try {
     throw new Error(`installed package references binding mismatch: ${JSON.stringify(referencesQuery.receipt)}`);
   }
 
+  const diagnosticsQuery = JSON.parse((await run(process.execPath, [
+    installedCli,
+    "diagnostics",
+    descriptor,
+    "src/main.ts",
+    "--state",
+    state,
+  ], { cwd: consumer })).stdout);
+  if (diagnosticsQuery.receipt?.operation !== "diagnostics"
+    || diagnosticsQuery.receipt?.request?.scope !== "document"
+    || diagnosticsQuery.receipt?.document?.path !== "src/main.ts"
+    || diagnosticsQuery.receipt?.candidate?.commit_oid !== a
+    || diagnosticsQuery.receipt?.source_binding !== "VERIFIED"
+    || diagnosticsQuery.receipt?.environment_binding !== "VERIFIED"
+    || !Array.isArray(diagnosticsQuery.receipt?.result)) {
+    throw new Error(`installed package diagnostics binding mismatch: ${JSON.stringify(diagnosticsQuery.receipt)}`);
+  }
+  const diagnosticsValidation = JSON.parse((await run(process.execPath, [
+    installedCli,
+    "validate",
+    diagnosticsQuery.receipt_path,
+  ], { cwd: consumer })).stdout);
+  if (diagnosticsValidation.valid !== true || diagnosticsValidation.receipt_id !== diagnosticsQuery.receipt?.receipt_id) {
+    throw new Error(`installed CLI did not validate diagnostics receipt: ${JSON.stringify(diagnosticsValidation)}`);
+  }
+
   const installedApi = await import(join(installedRoot, "dist", "src", "index.js"));
   if (typeof installedApi.SemanticSession?.prototype?.references !== "function") {
     throw new Error("installed public API omitted SemanticSession.references");
+  }
+  if (typeof installedApi.SemanticSession?.prototype?.diagnostics !== "function"
+    || typeof installedApi.validateDiagnosticsReceipt !== "function"
+    || typeof installedApi.runDockerDiagnostics !== "function") {
+    throw new Error("installed public API omitted diagnostics exports");
   }
 
   await run(process.execPath, [installedCli, "close", descriptor, "--state", state], { cwd: consumer });
@@ -194,6 +225,8 @@ try {
     environment_binding: query.receipt.environment_binding,
     references_operation: referencesQuery.receipt.operation,
     references_include_declaration: referencesQuery.receipt.request.include_declaration,
+    diagnostics_operation: diagnosticsQuery.receipt.operation,
+    diagnostics_transport: diagnosticsQuery.receipt.transport?.kind,
   }, null, 2) + "\n");
 } finally {
   await rm(scratch, { recursive: true, force: true }).catch(() => undefined);

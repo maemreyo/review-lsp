@@ -169,6 +169,12 @@ export class StdioLspDriver {
     return { serverInfo: this.serverInfo, capabilities: this.capabilities ?? null };
   }
 
+  get diagnosticsTransportKind(): "LSP_DOCUMENT_DIAGNOSTIC" | "TSSERVER_SYNC_DIAGNOSTICS" | null {
+    if (this.capabilities?.diagnosticProvider) return "LSP_DOCUMENT_DIAGNOSTIC";
+    const executeCommands = this.capabilities?.executeCommandProvider?.commands ?? [];
+    return executeCommands.includes("typescript.tsserverRequest") ? "TSSERVER_SYNC_DIAGNOSTICS" : null;
+  }
+
   async start(): Promise<void> {
     if (!this.child.pid) throw new ReviewLspError("LSP_PROTOCOL_ERROR", "language server did not expose a pid");
     this.connection.listen();

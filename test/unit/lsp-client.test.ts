@@ -146,6 +146,7 @@ describe("stdio LSP lifecycle fault injection", () => {
     await driver.start();
     const document = await open(driver, rootDir);
     try {
+      expect(driver.diagnosticsTransportKind).toBeNull();
       await expect(driver.diagnostics(document))
         .rejects.toMatchObject({ code: "LSP_CAPABILITY_UNSUPPORTED" });
     } finally {
@@ -165,6 +166,7 @@ describe("stdio LSP lifecycle fault injection", () => {
     await admitted.start();
     const document = await open(admitted, rootDir);
     try {
+      expect(admitted.diagnosticsTransportKind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
       const outcome = await admitted.diagnostics(document);
       expect(outcome.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
       if (outcome.kind !== "LSP_DOCUMENT_DIAGNOSTIC") throw new Error("expected pull diagnostics");
@@ -209,6 +211,7 @@ describe("stdio LSP lifecycle fault injection", () => {
     await admitted.start();
     const document = await open(admitted, rootDir);
     try {
+      expect(admitted.diagnosticsTransportKind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
       const outcome = await admitted.diagnostics(document);
       expect(outcome.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
       if (outcome.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics");

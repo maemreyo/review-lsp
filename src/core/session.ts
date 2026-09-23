@@ -624,7 +624,7 @@ export class SemanticSession {
     profile: TypeScriptProfile;
     session_id: string;
     session_epoch: number;
-    capabilities: ["hover", "definition", "references"];
+    capabilities: Array<"hover" | "definition" | "references" | "diagnostics">;
   }> {
     this.ensureOpen();
     await verifyCandidateIntegrity(this.candidate);
@@ -634,7 +634,12 @@ export class SemanticSession {
       profile: this.profile,
       session_id: this.sessionId,
       session_epoch: this.sessionEpoch,
-      capabilities: ["hover", "definition", "references"],
+      capabilities: [
+        "hover",
+        "definition",
+        "references",
+        ...(this.driver.diagnosticsTransportKind ? ["diagnostics" as const] : []),
+      ],
     };
   }
 
@@ -648,6 +653,10 @@ export class SemanticSession {
 
   async references(input: ReferencesQueryInput): Promise<SemanticReceipt> {
     return this.query("references", input);
+  }
+
+  async diagnostics(input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
+    return this.queryDiagnostics(input);
   }
 
   async [diagnosticsCoreQuery](input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
