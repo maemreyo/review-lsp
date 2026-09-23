@@ -184,21 +184,22 @@ Acceptance requires differential comparison against an independently started ref
 
 Diagnostics follow references, not in parallel.
 
-Diagnostics differ from point queries because they can be document/project-state driven and may arrive through publish notifications rather than a single request. The design must first freeze what exact diagnostic authority means.
+The diagnostics authority is now frozen in:
 
-Preferred alpha.4 scope is document diagnostics only if the selected TypeScript server path can provide a deterministic bounded request/response contract. If not, use an explicitly bounded publishDiagnostics collection contract with:
+`docs/design-notes/ALPHA4_DIAGNOSTICS_AUTHORITY.md`
 
-- exact opened document set;
-- bounded settle/deadline semantics;
-- exact document versions;
-- deterministic ordering/canonicalization;
-- explicit completeness limitation;
-- candidate/environment/toolchain provenance;
-- no claim of project-wide build correctness.
+The frozen Alpha.4 scope is document diagnostics only, with deterministic request/response transports:
 
-Do not expose diagnostics publicly until this contract is reviewed.
+- TypeScript 6 / legacy tsserver engines: the advertised `typescript.tsserverRequest` bridge with the fixed synchronous syntax + semantic + suggestion diagnostic commands;
+- TypeScript 7 native LSP: standard `textDocument/diagnostic` when `diagnosticProvider` is advertised.
 
-Diagnostics receipt/result provenance should identify diagnostic source/document/range/severity/code/message and any related-information URIs that can be classified against admitted roots.
+Bounded `publishDiagnostics` timing is not authoritative in Alpha.4 because silence is not a completion signal.
+
+Diagnostics use a separate content-addressed receipt because point-query `review-lsp.receipt.v1` requires line/character coordinate context. The diagnostics receipt binds exact document bytes/version, candidate/environment/toolchain/session identity, transport, normalized diagnostics, related-information provenance, deterministic ordering, completeness semantics, and explicit limitations.
+
+No diagnostics result may be described as project-wide build correctness.
+
+Do not expose diagnostics publicly until the frozen authority contract is implemented, verified on both admitted engine generations, and candidate-bound reviewed.
 
 ## 6. Symbols
 
