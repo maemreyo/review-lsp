@@ -10,7 +10,7 @@
 
 Review-LSP runs LSP semantic queries against an exact Git candidate, not whichever checkout happens to be live. Each successful query returns a content-addressed receipt binding the candidate, document, semantic toolchain, environment, request, result, and isolation mode.
 
-Current public release: **0.1.0-alpha.3**.
+Current public release: **0.1.0-alpha.4**.
 
 ```bash
 npm install review-lsp@alpha
@@ -74,12 +74,14 @@ The current TypeScript profile includes:
 - `typescript-language-server@6.0.0`;
 - `typescript@6.0.3`;
 - exact local Git commit candidates;
-- `hover` and `definition`;
-- CLI lifecycle: `prepare`, `inspect`, `query`, `validate`, `close`;
+- `hover`, `definition`, `references`, and document `diagnostics`;
+- CLI lifecycle: `prepare`, `inspect`, point `query`, document `diagnostics`, `validate`, `close`;
 - MCP stdio server with:
   - `review_lsp_candidate_info`
   - `review_lsp_hover`
-  - `review_lsp_definition`;
+  - `review_lsp_definition`
+  - `review_lsp_references`
+  - `review_lsp_diagnostics`;
 - native `TRUSTED_LOCAL` execution;
 - Linux `CONTAINER_READ_ONLY` execution;
 - content-addressed package/provider artifact identity;
@@ -101,6 +103,8 @@ The output includes `candidate_descriptor`. Query it using 0-based LSP positions
 ```bash
 npx review-lsp query <candidate.json> hover src/example.ts 12 8
 npx review-lsp query <candidate.json> definition src/example.ts 12 8
+npx review-lsp query <candidate.json> references src/example.ts 12 8 --include-declaration false
+npx review-lsp diagnostics <candidate.json> src/example.ts
 ```
 
 Validate the persisted receipt:
@@ -155,29 +159,31 @@ The inner process verifies that `/candidate` is an explicit Linux read-only moun
 
 ## Release evidence
 
-`0.1.0-alpha.3` is release-gated by:
+`0.1.0-alpha.4` is release-gated by:
 
-- local macOS arm64 / Node 24.19.0 `pnpm check`, package smoke and P7 benchmark — PASS;
-- candidate-bound independent review plus clean successor review for the final blocker — PASS;
+- exact-candidate references/diagnostics unit and differential TypeScript 6/7 acceptance coverage;
+- exact release-candidate `pnpm check`, package/MCP/cache-crash smokes and benchmark;
+- real Workbench provider dogfood for references and document diagnostics — PASS before publish;
+- candidate-bound independent review of implementation and release-prep deltas — required PASS;
 - macOS 14 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
 - Ubuntu 24.04 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
 - dedicated Linux Docker isolation job — required PASS before publish;
 - public-registry clean-install smoke — run after publication and recorded separately.
 
-See [compatibility evidence](docs/compatibility/0.1.0-alpha.3.md) and the [release notes](docs/releases/0.1.0-alpha.3.md).
+See [compatibility evidence](docs/compatibility/0.1.0-alpha.4.md) and the [release notes](docs/releases/0.1.0-alpha.4.md).
 
 ## Current limitations
 
 - The dependency provider is intentionally narrow: pnpm 10 lockfile projects and admitted workspace/config syntax only; unsupported package-manager/workspace/build surfaces remain `PARTIAL` or `UNSUPPORTED`.
 - TypeScript only for this alpha.
 - Dirty-worktree candidates are not supported.
-- References, symbols, diagnostics, and additional semantic operations are deferred.
+- Symbols and additional semantic operations are deferred; diagnostics are document-scoped semantic evidence and are not project-wide build correctness.
 - MCP is local stdio only.
 - Windows is not in the alpha compatibility claim.
 - Native mode is not a hostile-host sandbox.
 - A malicious container host administrator is outside the container profile's threat boundary.
 
-See the [current support matrix](docs/status/CURRENT.md) for the exact alpha.3 boundary and [ROADMAP.md](ROADMAP.md) for likely next areas.
+See the [current support matrix](docs/status/CURRENT.md) for the exact alpha.4 boundary and [ROADMAP.md](ROADMAP.md) for likely next areas.
 
 ## Development
 

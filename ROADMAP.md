@@ -4,9 +4,9 @@ Review-LSP is intentionally developing from a narrow, verifiable vertical slice 
 
 This is a direction document, not a compatibility promise.
 
-## Current baseline — 0.1.0-alpha.3
+## Current baseline — 0.1.0-alpha.4
 
-The dependency-aware TypeScript path is already implemented for an admitted subset:
+The dependency-aware TypeScript path is implemented for an admitted subset:
 
 - content-addressed pnpm 10 dependency inputs, acquisition and sealed snapshots;
 - source + dependency semantic projections;
@@ -15,27 +15,17 @@ The dependency-aware TypeScript path is already implemented for an admitted subs
 - candidate-selected TypeScript engines where the execution profile can admit them;
 - candidate-local `.tgz` dependencies referenced by frozen pnpm `file:` entries;
 - persistent semantic runtime reuse;
-- hover and definition with provenance-bound receipts.
+- hover and definition with provenance-bound receipts;
+- references with explicit declaration-inclusion identity and per-target provenance;
+- document diagnostics with deterministic TypeScript 6/7 transports, separate receipts, related-information provenance and engine-full-document completeness.
+
+Diagnostics are semantic evidence for one admitted document and are not project-wide build correctness. Symbols remain deferred because Alpha.4 did not need to widen the evidence surface further.
 
 This is not universal dependency-project support. Unsupported or ambiguous package-manager, workspace, config, package-export, local-directory and build-pipeline surfaces remain PARTIAL or UNSUPPORTED.
 
-## Near term — Alpha.4
+The frozen Alpha.4 implementation authority remains `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
 
-### Semantic impact operations
-
-Priority order:
-
-1. references;
-2. diagnostics;
-3. document/workspace symbols only if they fit the same evidence model without scope creep.
-
-Each operation must preserve candidate, environment/snapshot/projection, profile/toolchain, document/request, result and provenance identity.
-
-References is first because it extends the current question from “what is this?” to the bounded semantic evidence needed for “where is this used?”.
-
-Diagnostics follows only after its authority contract is explicit; a successful language-server diagnostic exchange is not equivalent to project-wide build correctness.
-
-See `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
+## Near term — post-Alpha.4 hardening
 
 ### Richer provenance
 

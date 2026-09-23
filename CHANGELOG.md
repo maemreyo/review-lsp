@@ -6,6 +6,31 @@ The project is currently prerelease software. Until 1.0, minor versions may incl
 
 ## Unreleased
 
+## 0.1.0-alpha.4 — 2026-09-23
+
+### Added
+
+- Candidate-bound `references` with explicit `includeDeclaration` request identity and per-target provenance classification across candidate source, dependency snapshots, derived artifacts, toolchain source, and unbound targets.
+- Candidate-bound document `diagnostics` with a separate content-addressed receipt, deterministic ordering, related-information provenance, and explicit completeness semantics.
+- Dual deterministic diagnostics transport: TypeScript 6 compatibility profiles use the admitted synchronous tsserver diagnostic command set; TypeScript 7 native engines use `textDocument/diagnostic` when advertised.
+- Public diagnostics across `SemanticSession`, CLI, Linux container execution, MCP stdio, and package exports.
+- Dynamic diagnostics capability advertisement derived from the initialized semantic engine rather than generic package knowledge.
+
+### Security / correctness
+
+- Reject diagnostics when neither deterministic transport is advertised; do not treat timed `publishDiagnostics` silence as completion.
+- Reject widened, unchanged, related-document, malformed-range, malformed-transport, and timeout outcomes where the frozen diagnostics authority cannot prove the requested document result.
+- Preserve candidate, document, environment, semantic-toolchain, session, transport, result, and related-information identity in diagnostics receipts.
+- Keep diagnostics document-scoped; no diagnostic result is evidence of project-wide build correctness.
+- Preserve Linux `CONTAINER_READ_ONLY` isolation for diagnostics without synthetic line/character coordinates.
+- Keep Workbench consumer policy outside Review-LSP core; external dogfood admits references/diagnostics only through explicit provider capabilities and exact candidate receipts.
+
+### Evidence
+
+- Independent implementation reviews for references and diagnostics completed with blocking findings repaired through clean successor reviews where required.
+- Exact-candidate TypeScript 6/7 differential acceptance, MCP, installed-package, cache-crash, and Linux container diagnostics gates are required PASS before publication.
+- Real pinned Review-LSP provider dogfood through Zamery Workbench covers both references and document diagnostics.
+
 ## 0.1.0-alpha.3 — 2026-09-22
 
 ### Fixed

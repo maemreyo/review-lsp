@@ -1,6 +1,6 @@
 # Current support matrix
 
-Baseline release: `review-lsp@0.1.0-alpha.3`.
+Baseline release: `review-lsp@0.1.0-alpha.4`.
 
 This file describes current support. Historical H0/H1/H3/H5 documents record the gates that existed when those milestones were closed and may contain wording that was correct for an older alpha.
 
@@ -15,7 +15,7 @@ This file describes current support. Historical H0/H1/H3/H5 documents record the
 | Build scripts | Not arbitrary | Acquisition ignores lifecycle scripts; only constrained derived-declaration flow is admitted |
 | Semantic projection | Implemented | Candidate source remains authority; admitted dependencies/derived artifacts are projected |
 | TypeScript engine | Bundled compatibility profile or candidate-selected admitted engine | Exact-project alignment is recorded separately from environment reproducibility |
-| Operations | hover, definition | references/diagnostics/symbols are not public in alpha.3 |
+| Operations | hover, definition, references, document diagnostics | References bind declaration-inclusion and target provenance; diagnostics are engine-full-document semantic responses, not project-wide build correctness; symbols remain deferred |
 | Native isolation | TRUSTED_LOCAL | Host itself is trusted |
 | Linux isolation | CONTAINER_READ_ONLY | Exact image/mount identity is bound; malicious host admin is out of scope |
 | OS evidence | macOS + Linux | Windows is not claimed |
@@ -24,4 +24,4 @@ This file describes current support. Historical H0/H1/H3/H5 documents record the
 
 A dependency-bearing repository can reach `environment_binding=VERIFIED` only when every semantic input required by the active profile is admitted: dependency inputs/snapshot, projection, config and entry-point gates, toolchain and isolation requirements. Unsupported or ambiguous inputs keep the result PARTIAL/UNSUPPORTED rather than being silently ignored.
 
-The current next-phase authority is `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
+Alpha.4 implementation authority is preserved in `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`; post-alpha.4 expansion must preserve the same candidate/environment/toolchain evidence boundaries.
