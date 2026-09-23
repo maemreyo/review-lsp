@@ -223,13 +223,17 @@ Unsupported:
 
 ### 7.1 Effective inheritance
 
-Ownership fields follow child-overrides-parent semantics at the field level.
+Ownership fields are inherited independently. A child declaration replaces only the same field from its base config; it does not erase a different inherited membership field.
 
-For each of `files`, `include`, and `exclude`:
+For each of `files`, `include`, and `exclude` independently:
 
-- if the child explicitly declares the field, that field replaces the inherited value;
-- otherwise the nearest ancestor declaration is inherited;
+- if the child explicitly declares that field, that field replaces the inherited value for that field;
+- otherwise the nearest ancestor declaration for that field is inherited;
+- `files` and `include` both contribute membership when both are effective, so inherited `include` + child `files` is a union, and inherited `files` + child `include` is also a union;
+- `exclude` filters only the effective `include` contribution; it does not remove explicit `files` membership;
 - the base directory for path/pattern resolution remains the directory of the config where that effective field was declared.
+
+This behavior was checked against the TypeScript 6 config parser before implementation: child `files` preserves inherited `include`, child `include` preserves inherited `files`, while a child declaration overrides the same inherited field.
 
 The ownership evidence must retain the declaration origin for every effective field so inherited path bases are auditable.
 
