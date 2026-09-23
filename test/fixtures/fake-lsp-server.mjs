@@ -18,6 +18,18 @@ connection.onRequest("initialize", () => ({
     hoverProvider: mode !== "unsupported",
     definitionProvider: true,
     referencesProvider: mode !== "unsupported-references",
+    ...(mode.startsWith("diagnostic-lsp")
+      ? {
+          diagnosticProvider: {
+            identifier: "review-lsp-fake",
+            interFileDependencies: true,
+            workspaceDiagnostics: false,
+          },
+        }
+      : {}),
+    ...(mode.startsWith("diagnostic-legacy")
+      ? { executeCommandProvider: { commands: ["typescript.tsserverRequest"] } }
+      : {}),
   },
   serverInfo: { name: "review-lsp-fake", version: "1" },
 }));
@@ -43,6 +55,50 @@ connection.onRequest("textDocument/references", (params) => [{
     end: { line: 0, character: params.context?.includeDeclaration ? 5 : 12 },
   },
 }]);
+
+connection.onRequest("textDocument/diagnostic", () => {
+  if (mode === "diagnostic-lsp-unchanged") return { kind: "unchanged", resultId: "fake-result" };
+  if (mode === "diagnostic-lsp-related") {
+    return { kind: "full", items: [], relatedDocuments: {} };
+  }
+  if (mode === "diagnostic-lsp-malformed") return { kind: "full", items: "not-an-array" };
+  return {
+    kind: "full",
+    items: [{
+      range: { start: { line: 0, character: 7 }, end: { line: 0, character: 12 } },
+      severity: 1,
+      code: 9001,
+      source: "fake",
+      message: "fake diagnostic",
+    }],
+  };
+});
+
+connection.onRequest("workspace/executeCommand", async (params) => {
+  if (params.command !== "typescript.tsserverRequest") return null;
+  const [command] = params.arguments ?? [];
+  if (mode === "diagnostic-legacy-delay") {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  if (mode === "diagnostic-legacy-malformed" && command === "semanticDiagnosticsSync") {
+    return { type: "response", command, success: false, body: [] };
+  }
+  return {
+    type: "response",
+    command,
+    success: true,
+    body: command === "semanticDiagnosticsSync"
+      ? [{
+          start: { line: 1, offset: 8 },
+          end: { line: 1, offset: 13 },
+          text: "fake diagnostic",
+          code: 9001,
+          category: "error",
+        }]
+      : [],
+  };
+});
+
 connection.onRequest("shutdown", () => null);
 connection.onNotification("exit", () => process.exit(0));
 

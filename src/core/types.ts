@@ -135,6 +135,100 @@ export interface SemanticReceipt {
   observed_at: string;
 }
 
+export interface SemanticTargetBinding {
+  uri: string;
+  classification:
+    | "SOURCE_CANDIDATE"
+    | "DEPENDENCY_SNAPSHOT"
+    | "DERIVED_WORKSPACE_ARTIFACT"
+    | "TOOLCHAIN_TYPESCRIPT"
+    | "TOOLCHAIN_SERVER"
+    | "UNBOUND";
+  path?: string;
+  sha256?: string;
+  reason?: string;
+}
+
+export type NormalizedDiagnosticKind = "syntactic" | "semantic" | "suggestion" | "engine";
+export type NormalizedDiagnosticSeverity = "error" | "warning" | "information" | "hint" | "unknown";
+
+export interface NormalizedDiagnosticRelatedInformation {
+  message: string;
+  code: string | number | null;
+  severity: NormalizedDiagnosticSeverity;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  } | null;
+  uri: string | null;
+  binding: SemanticTargetBinding | null;
+}
+
+export interface NormalizedDiagnostic {
+  kind: NormalizedDiagnosticKind;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  severity: NormalizedDiagnosticSeverity;
+  code: string | number | null;
+  source: string | null;
+  message: string;
+  tags: {
+    unnecessary: boolean;
+    deprecated: boolean;
+  };
+  related_information: NormalizedDiagnosticRelatedInformation[];
+}
+
+export interface DiagnosticsReceipt {
+  schema_version: "review-lsp.diagnostics-receipt.v1";
+  receipt_id: string;
+  candidate: {
+    candidate_id: string;
+    repository_identity: string;
+    git_object_format: string;
+    commit_oid: string;
+    tree_oid: string;
+    source_manifest_sha256: string;
+  };
+  environment_manifest_sha256: string;
+  profile_sha256: string;
+  session_id: string;
+  session_epoch: number;
+  operation: "diagnostics";
+  document: {
+    path: string;
+    uri: string;
+    sha256: string;
+    version: number;
+    language_id: string;
+    position_encoding: "utf-16";
+  };
+  request: { scope: "document" };
+  transport: {
+    kind: "LSP_DOCUMENT_DIAGNOSTIC" | "TSSERVER_SYNC_DIAGNOSTICS";
+    protocol_operations: string[];
+    diagnostic_provider: {
+      identifier: string | null;
+      inter_file_dependencies: boolean | null;
+      workspace_diagnostics: boolean | null;
+    } | null;
+  };
+  execution_status: ExecutionStatus;
+  source_binding: BindingState;
+  environment_binding: BindingState;
+  semantic_toolchain: SemanticToolchainEvidence;
+  isolation: IsolationKind;
+  result_scope: "DOCUMENT_DIAGNOSTICS";
+  completeness: "ENGINE_FULL_DOCUMENT_RESPONSE";
+  limitations: string[];
+  result: NormalizedDiagnostic[];
+  result_sha256: string;
+  request_duration_ms: number;
+  observed_at: string;
+}
+
 export interface DependencyInputFile {
   path: string;
   sha256: string;

@@ -272,8 +272,9 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
         include: ["src/**/*.ts"],
       }, null, 2) + "\n",
       "packages/app/src/main.ts":
-        'import { makeProvider } from "@fixture/provider";\n'
-        + 'export const result = makeProvider("Ada");\n',
+        'import { makeProvider, type Provider } from "@fixture/provider";\n'
+        + 'export const result = makeProvider("Ada");\n'
+        + 'export const broken: Provider = { name: 1 };\n',
     };
     await writeFiles(repo, files);
     await writeFiles(referenceRoot, files);
@@ -403,6 +404,22 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
         expect.objectContaining({ classification: "SOURCE_CANDIDATE" }),
       ]));
       expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
+
+      const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
+        admitted.diagnostics({ path: "packages/app/src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+      expect(referenceDiagnostics.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      if (referenceDiagnostics.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics transport");
+      const referenceError = referenceDiagnostics.semantic.find((item) => item.code === 2322);
+      expect(referenceError?.relatedInformation).toHaveLength(1);
+      expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
+      const admittedError = admittedDiagnostics.result.find((item) => item.code === 2322);
+      expect(admittedError?.related_information).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ classification: "DERIVED_WORKSPACE_ARTIFACT" }),
+        }),
+      ]));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }
@@ -540,8 +557,9 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
         include: ["src/**/*.ts"],
       }, null, 2) + "\n",
       "src/main.ts":
-        'import { answer } from "dep-pkg";\n'
-        + "export const result = answer;\n",
+        'import { answer, type Dep } from "dep-pkg";\n'
+        + "export const result = answer;\n"
+        + "export const broken: Dep = { x: 1 };\n",
     };
     await writeFiles(repo, files);
     await writeFiles(referenceRoot, files);
@@ -552,7 +570,7 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       version: "1.0.0",
       types: "./index.d.ts",
     }, null, 2) + "\n";
-    const declarationBody = "export declare const answer: 42;\n";
+    const declarationBody = "export interface Dep { x: string }\nexport declare const answer: 42;\n";
     const materializeDependency = async (base: string): Promise<void> => {
       const packageRoot = join(base, "node_modules", ".pnpm", "dep-pkg@1.0.0", "node_modules", "dep-pkg");
       await mkdir(packageRoot, { recursive: true });
@@ -629,6 +647,22 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
         expect.objectContaining({ classification: "SOURCE_CANDIDATE" }),
       ]));
       expect(stripUris(admittedReferenceResult.server_response)).toEqual(stripUris(referenceReferences.value));
+
+      const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
+        admitted.diagnostics({ path: "src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+      expect(referenceDiagnostics.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      if (referenceDiagnostics.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics transport");
+      const referenceError = referenceDiagnostics.semantic.find((item) => item.code === 2322);
+      expect(referenceError?.relatedInformation).toHaveLength(1);
+      expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
+      const admittedError = admittedDiagnostics.result.find((item) => item.code === 2322);
+      expect(admittedError?.related_information).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ classification: "DEPENDENCY_SNAPSHOT" }),
+        }),
+      ]));
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }

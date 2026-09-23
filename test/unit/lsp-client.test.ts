@@ -134,6 +134,133 @@ describe("stdio LSP lifecycle fault injection", () => {
     }
   });
 
+  it("fails diagnostics closed when no deterministic transport is advertised", async () => {
+    const rootDir = await root();
+    const driver = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env },
+      1_000,
+      200,
+    );
+    await driver.start();
+    const document = await open(driver, rootDir);
+    try {
+      await expect(driver.diagnostics(document))
+        .rejects.toMatchObject({ code: "LSP_CAPABILITY_UNSUPPORTED" });
+    } finally {
+      await driver.shutdown();
+    }
+  });
+
+  it("accepts full document diagnostics and rejects widened, unchanged, or malformed pull responses", async () => {
+    const rootDir = await root();
+    const admitted = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env, REVIEW_LSP_FAKE_MODE: "diagnostic-lsp" },
+      1_000,
+      200,
+    );
+    await admitted.start();
+    const document = await open(admitted, rootDir);
+    try {
+      const outcome = await admitted.diagnostics(document);
+      expect(outcome.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
+      if (outcome.kind !== "LSP_DOCUMENT_DIAGNOSTIC") throw new Error("expected pull diagnostics");
+      expect(outcome.diagnosticProvider).toEqual({
+        identifier: "review-lsp-fake",
+        interFileDependencies: true,
+        workspaceDiagnostics: false,
+      });
+      expect(outcome.diagnostics).toMatchObject([{ code: 9001, message: "fake diagnostic" }]);
+    } finally {
+      await admitted.shutdown();
+    }
+
+    for (const mode of ["diagnostic-lsp-unchanged", "diagnostic-lsp-related", "diagnostic-lsp-malformed"]) {
+      const rejected = new StdioLspDriver(
+        profile(entrypoint),
+        rootDir,
+        { ...process.env, REVIEW_LSP_FAKE_MODE: mode },
+        1_000,
+        200,
+      );
+      await rejected.start();
+      const rejectedDocument = await open(rejected, rootDir);
+      try {
+        await expect(rejected.diagnostics(rejectedDocument))
+          .rejects.toMatchObject({ code: "LSP_PROTOCOL_ERROR" });
+      } finally {
+        await rejected.shutdown();
+      }
+    }
+  });
+
+  it("uses the fixed legacy diagnostic command set and shares one timeout budget", async () => {
+    const rootDir = await root();
+    const admitted = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env, REVIEW_LSP_FAKE_MODE: "diagnostic-legacy" },
+      1_000,
+      200,
+    );
+    await admitted.start();
+    const document = await open(admitted, rootDir);
+    try {
+      const outcome = await admitted.diagnostics(document);
+      expect(outcome.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      if (outcome.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics");
+      expect(outcome.protocolOperations).toEqual([
+        "syntacticDiagnosticsSync",
+        "semanticDiagnosticsSync",
+        "suggestionDiagnosticsSync",
+      ]);
+      expect(outcome.syntactic).toEqual([]);
+      expect(outcome.semantic).toMatchObject([{ code: 9001, category: "error" }]);
+      expect(outcome.suggestion).toEqual([]);
+    } finally {
+      await admitted.shutdown();
+    }
+
+    const malformed = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      { ...process.env, REVIEW_LSP_FAKE_MODE: "diagnostic-legacy-malformed" },
+      1_000,
+      200,
+    );
+    await malformed.start();
+    const malformedDocument = await open(malformed, rootDir);
+    try {
+      await expect(malformed.diagnostics(malformedDocument))
+        .rejects.toMatchObject({ code: "LSP_PROTOCOL_ERROR" });
+    } finally {
+      await malformed.shutdown();
+    }
+
+    const timed = new StdioLspDriver(
+      profile(entrypoint),
+      rootDir,
+      {
+        ...process.env,
+        REVIEW_LSP_FAKE_MODE: "diagnostic-legacy-delay",
+        REVIEW_LSP_FAKE_DELAY_MS: "80",
+      },
+      120,
+      200,
+    );
+    await timed.start();
+    const timedDocument = await open(timed, rootDir);
+    try {
+      await expect(timed.diagnostics(timedDocument))
+        .rejects.toMatchObject({ code: "LSP_TIMEOUT" });
+    } finally {
+      await timed.shutdown();
+    }
+  });
+
   it("fails closed when the language server crashes during a request", async () => {
     const rootDir = await root();
     const driver = new StdioLspDriver(

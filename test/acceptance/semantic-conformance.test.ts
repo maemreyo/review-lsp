@@ -3,10 +3,10 @@ import { createRequire } from "node:module";
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { contentId } from "../../src/core/canonical.js";
@@ -68,6 +68,8 @@ async function sealTree(root: string): Promise<void> {
 
 async function exactProjectFixture(options: {
   enginePackage?: "typescript" | "typescript7";
+  valueSource?: string;
+  mainSource?: string;
 } = {}): Promise<{
   root: string;
   referenceRoot: string;
@@ -112,8 +114,8 @@ async function exactProjectFixture(options: {
     },
     include: ["src/**/*.ts"],
   }, null, 2) + "\n";
-  const valueSource = 'export const value: string = "candidate";\n';
-  const mainSource = 'import { value } from "./value";\nexport const result = value;\n';
+  const valueSource = options.valueSource ?? 'export const value: string = "candidate";\n';
+  const mainSource = options.mainSource ?? 'import { value } from "./value";\nexport const result = value;\n';
 
   const lockfile = [
     "lockfileVersion: '9.0'",
@@ -311,6 +313,22 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       const admittedReferenceResult = admittedReferences.result as { server_response?: unknown };
       expect(normalizeUris(admittedReferenceResult.server_response, projection.execution_root))
         .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
+
+      const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
+        admitted.diagnostics({ path: "src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+      expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
+      expect(admittedDiagnostics.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+      expect(admittedDiagnostics.transport.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      expect(admittedDiagnostics.result).toEqual([]);
+      expect(referenceDiagnostics.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      if (referenceDiagnostics.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics transport");
+      expect([
+        ...referenceDiagnostics.syntactic,
+        ...referenceDiagnostics.semantic,
+        ...referenceDiagnostics.suggestion,
+      ]).toEqual([]);
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }
@@ -405,6 +423,316 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       const admittedReferenceResult = admittedReferences.result as { server_response?: unknown };
       expect(normalizeUris(admittedReferenceResult.server_response, projection.execution_root))
         .toEqual(normalizeUris(referenceReferences.value, referenceRoot));
+
+      const [admittedDiagnostics, referenceDiagnostics] = await Promise.all([
+        admitted.diagnostics({ path: "src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+      expect(admittedDiagnostics.environment_binding).toBe("VERIFIED");
+      expect(admittedDiagnostics.semantic_toolchain.semantic_engine.implementation).toBe("typescript-native-lsp");
+      expect(admittedDiagnostics.transport.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
+      expect(admittedDiagnostics.transport.diagnostic_provider).toMatchObject({
+        identifier: "typescript",
+        inter_file_dependencies: true,
+        workspace_diagnostics: false,
+      });
+      expect(admittedDiagnostics.result).toEqual([]);
+      expect(referenceDiagnostics.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
+      if (referenceDiagnostics.kind !== "LSP_DOCUMENT_DIAGNOSTIC") throw new Error("expected native document diagnostics transport");
+      expect(referenceDiagnostics.diagnostics).toEqual([]);
+    } finally {
+      await Promise.all([admitted.close(), reference.shutdown()]);
+    }
+  }, 120_000);
+
+  it("matches TypeScript <=6 sync diagnostics for an error document and binds related information provenance", async () => {
+    const mainSource = [
+      "interface Foo { x: string }",
+      "export const value: Foo = { x: 1 };",
+      "",
+    ].join("\n");
+    const { root, referenceRoot, candidate, snapshot, projection, state, profile } = await exactProjectFixture({
+      mainSource,
+    });
+    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const admitted = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+
+    const referenceHome = join(root, "reference-home-diag-ts6");
+    const referenceTmp = join(root, "reference-tmp-diag-ts6");
+    await Promise.all([
+      mkdir(referenceHome, { recursive: true }),
+      mkdir(referenceTmp, { recursive: true }),
+    ]);
+    const reference = new StdioLspDriver(
+      profile,
+      referenceRoot,
+      {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: referenceHome,
+        TMPDIR: referenceTmp,
+      },
+      10_000,
+      1_000,
+    );
+
+    try {
+      await reference.start();
+      const referenceDocument = await reference.openDocument({
+        path: join(referenceRoot, "src", "main.ts"),
+        text: mainSource,
+        languageId: "typescript",
+      });
+      const [receipt, raw] = await Promise.all([
+        admitted.diagnostics({ path: "src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+
+      expect(raw.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      if (raw.kind !== "TSSERVER_SYNC_DIAGNOSTICS") throw new Error("expected legacy diagnostics transport");
+      expect(raw.syntactic).toEqual([]);
+      expect(raw.suggestion).toEqual([]);
+      expect(raw.semantic).toHaveLength(1);
+      const rawDiagnostic = raw.semantic[0]!;
+      expect(rawDiagnostic.code).toBe(2322);
+      expect(rawDiagnostic.relatedInformation).toHaveLength(1);
+
+      expect(receipt.transport.kind).toBe("TSSERVER_SYNC_DIAGNOSTICS");
+      expect(receipt.environment_binding).toBe("VERIFIED");
+      expect(receipt.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+      expect(receipt.result).toHaveLength(1);
+      const diagnostic = receipt.result[0]!;
+      expect(diagnostic).toMatchObject({
+        kind: "semantic",
+        severity: "error",
+        code: 2322,
+        message: rawDiagnostic.text,
+        tags: { unnecessary: false, deprecated: false },
+      });
+      expect(diagnostic.range).toEqual({
+        start: { line: rawDiagnostic.start.line - 1, character: rawDiagnostic.start.offset - 1 },
+        end: { line: rawDiagnostic.end.line - 1, character: rawDiagnostic.end.offset - 1 },
+      });
+
+      const rawRelated = rawDiagnostic.relatedInformation![0]!;
+      const related = diagnostic.related_information[0]!;
+      expect(related).toMatchObject({
+        message: rawRelated.message,
+        code: rawRelated.code,
+        severity: "information",
+      });
+      expect(related.range).toEqual({
+        start: {
+          line: rawRelated.span!.start.line - 1,
+          character: rawRelated.span!.start.offset - 1,
+        },
+        end: {
+          line: rawRelated.span!.end.line - 1,
+          character: rawRelated.span!.end.offset - 1,
+        },
+      });
+      expect(related.binding).toMatchObject({
+        classification: "SOURCE_CANDIDATE",
+        path: "src/main.ts",
+      });
+
+      const repeated = await admitted.diagnostics({ path: "src/main.ts" });
+      expect(repeated.result).toEqual(receipt.result);
+      expect(repeated.candidate).toEqual(receipt.candidate);
+      expect(repeated.environment_manifest_sha256).toBe(receipt.environment_manifest_sha256);
+      expect(repeated.semantic_toolchain).toEqual(receipt.semantic_toolchain);
+      expect(repeated.session_id).toBe(receipt.session_id);
+      expect(repeated.session_epoch).toBe(receipt.session_epoch);
+    } finally {
+      await Promise.all([admitted.close(), reference.shutdown()]);
+    }
+  }, 120_000);
+
+  it("retains diagnostics but downgrades environment binding when related information is unbound", async () => {
+    const { root, candidate, snapshot, projection, state, profile } = await exactProjectFixture();
+    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const admitted = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+    const outsideUri = pathToFileURL(join(root, "outside.ts")).toString();
+    const diagnosticSpy = vi.spyOn(StdioLspDriver.prototype, "diagnostics").mockResolvedValue({
+      kind: "LSP_DOCUMENT_DIAGNOSTIC",
+      diagnostics: [{
+        range: {
+          start: { line: 1, character: 0 },
+          end: { line: 1, character: 6 },
+        },
+        severity: 1,
+        code: 9999,
+        source: "fixture",
+        message: "fixture diagnostic",
+        relatedInformation: [{
+          location: {
+            uri: outsideUri,
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+          },
+          message: "outside admitted roots",
+        }],
+      }],
+      diagnosticProvider: {
+        identifier: "fixture",
+        interFileDependencies: true,
+        workspaceDiagnostics: false,
+      },
+      protocolOperations: ["textDocument/diagnostic"],
+      durationMs: 1,
+    });
+
+    try {
+      const receipt = await admitted.diagnostics({ path: "src/main.ts" });
+      expect(receipt.environment_binding).toBe("PARTIAL");
+      expect(receipt.result).toHaveLength(1);
+      expect(receipt.result[0]?.related_information[0]).toMatchObject({
+        uri: outsideUri,
+        binding: {
+          classification: "UNBOUND",
+        },
+      });
+      expect(receipt.limitations).toEqual(expect.arrayContaining([
+        expect.stringContaining("diagnostic related information includes a URI outside every admitted root"),
+      ]));
+
+      diagnosticSpy.mockResolvedValueOnce({
+        kind: "LSP_DOCUMENT_DIAGNOSTIC",
+        diagnostics: [{
+          range: {
+            start: { line: 1, character: 6 },
+            end: { line: 1, character: 2 },
+          },
+          severity: 1,
+          code: 9998,
+          source: "fixture",
+          message: "malformed range",
+        }],
+        diagnosticProvider: {
+          identifier: "fixture",
+          interFileDependencies: true,
+          workspaceDiagnostics: false,
+        },
+        protocolOperations: ["textDocument/diagnostic"],
+        durationMs: 1,
+      });
+      await expect(admitted.diagnostics({ path: "src/main.ts" }))
+        .rejects.toMatchObject({ code: "LSP_PROTOCOL_ERROR" });
+    } finally {
+      diagnosticSpy.mockRestore();
+      await admitted.close();
+    }
+  }, 120_000);
+
+  it("matches TypeScript 7 native document diagnostics for an error document", async () => {
+    const mainSource = [
+      "interface Foo { x: string }",
+      "export const value: Foo = { x: 1 };",
+      "",
+    ].join("\n");
+    const {
+      root,
+      referenceRoot,
+      candidate,
+      snapshot,
+      projection,
+      state,
+      profile,
+      engineVersion,
+      nativeEntrypoint,
+    } = await exactProjectFixture({ enginePackage: "typescript7", mainSource });
+    expect(nativeEntrypoint).not.toBeNull();
+
+    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const admitted = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+    const referenceHome = join(root, "reference-home-diag-ts7");
+    const referenceTmp = join(root, "reference-tmp-diag-ts7");
+    await Promise.all([
+      mkdir(referenceHome, { recursive: true }),
+      mkdir(referenceTmp, { recursive: true }),
+    ]);
+    const reference = new StdioLspDriver(
+      profile,
+      referenceRoot,
+      {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: referenceHome,
+        TMPDIR: referenceTmp,
+      },
+      10_000,
+      1_000,
+      {
+        command: nativeEntrypoint!,
+        args: ["--lsp", "--stdio"],
+        initializationOptions: {},
+        implementation: "typescript-native-lsp-reference",
+        typescriptVersion: engineVersion,
+        projectEngineAdmitted: false,
+      },
+    );
+
+    try {
+      await reference.start();
+      const referenceDocument = await reference.openDocument({
+        path: join(referenceRoot, "src", "main.ts"),
+        text: mainSource,
+        languageId: "typescript",
+      });
+      const [receipt, raw] = await Promise.all([
+        admitted.diagnostics({ path: "src/main.ts" }),
+        reference.diagnostics(referenceDocument),
+      ]);
+
+      expect(raw.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
+      if (raw.kind !== "LSP_DOCUMENT_DIAGNOSTIC") throw new Error("expected native diagnostics transport");
+      expect(raw.diagnostics).toHaveLength(1);
+      const rawDiagnostic = raw.diagnostics[0]!;
+      expect(rawDiagnostic.code).toBe(2322);
+
+      expect(receipt.transport.kind).toBe("LSP_DOCUMENT_DIAGNOSTIC");
+      expect(receipt.environment_binding).toBe("VERIFIED");
+      expect(receipt.semantic_toolchain.semantic_engine.implementation).toBe("typescript-native-lsp");
+      expect(receipt.result).toHaveLength(1);
+      const diagnostic = receipt.result[0]!;
+      expect(diagnostic).toMatchObject({
+        kind: "engine",
+        severity: "error",
+        code: rawDiagnostic.code,
+        source: rawDiagnostic.source ?? null,
+        message: rawDiagnostic.message,
+      });
+      expect(diagnostic.range).toEqual(rawDiagnostic.range);
+      expect(diagnostic.tags).toEqual({
+        unnecessary: rawDiagnostic.tags?.includes(1) ?? false,
+        deprecated: rawDiagnostic.tags?.includes(2) ?? false,
+      });
+
+      const repeated = await admitted.diagnostics({ path: "src/main.ts" });
+      expect(repeated.result).toEqual(receipt.result);
+      expect(repeated.semantic_toolchain).toEqual(receipt.semantic_toolchain);
+      expect(repeated.session_id).toBe(receipt.session_id);
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
     }

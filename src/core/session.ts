@@ -2,6 +2,7 @@ import { mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
+import type { Diagnostic } from "vscode-languageserver-protocol";
 import { URI } from "vscode-uri";
 
 import { canonicalJson, contentId, sha256 } from "./canonical.js";
@@ -19,7 +20,7 @@ import {
   resolveProjectToolchain,
   resolvingProjectIdentity,
 } from "./toolchain.js";
-import { persistReceipt } from "./receipts.js";
+import { persistDiagnosticsReceipt, persistReceipt } from "./receipts.js";
 import { verifyTypeScriptProfile } from "./profile.js";
 import type {
   AdmittedEngineArtifact,
@@ -27,16 +28,28 @@ import type {
   CandidateDescriptor,
   CoordinateExpectation,
   DependencySnapshotDescriptor,
+  DiagnosticsReceipt,
   EnvironmentManifest,
   ExecutionProfile,
   IsolationKind,
+  NormalizedDiagnostic,
+  NormalizedDiagnosticRelatedInformation,
+  NormalizedDiagnosticSeverity,
   ProjectionDescriptor,
   ResolvingProject,
   SemanticReceipt,
+  SemanticTargetBinding,
   SemanticToolchainEvidence,
   TypeScriptProfile,
 } from "./types.js";
-import { candidateSafeEnvironment, languageIdForPath, StdioLspDriver } from "../lsp/client.js";
+import {
+  candidateSafeEnvironment,
+  languageIdForPath,
+  StdioLspDriver,
+  type DiagnosticTransportOutcome,
+  type LegacyDiagnostic,
+  type LegacyDiagnosticRelatedInformation,
+} from "../lsp/client.js";
 
 export interface SemanticQueryInput {
   path: string;
@@ -56,18 +69,8 @@ export interface ReferencesQueryInput extends SemanticQueryInput {
   includeDeclaration: boolean;
 }
 
-interface SemanticTargetBinding {
-  uri: string;
-  classification:
-    | "SOURCE_CANDIDATE"
-    | "DEPENDENCY_SNAPSHOT"
-    | "DERIVED_WORKSPACE_ARTIFACT"
-    | "TOOLCHAIN_TYPESCRIPT"
-    | "TOOLCHAIN_SERVER"
-    | "UNBOUND";
-  path?: string;
-  sha256?: string;
-  reason?: string;
+export interface DiagnosticsQueryInput {
+  path: string;
 }
 
 function admittedCandidatePath(candidate: CandidateDescriptor, path: string): string {
@@ -190,6 +193,253 @@ async function bindSemanticTargetUri(
   }
 
   return { uri, classification: "UNBOUND", reason: "result is not bound to an admitted root" };
+}
+
+interface DiagnosticBindingRoots {
+  executionRoot: string;
+  dependencyRoot?: string | undefined;
+  derivedRoots?: string[] | undefined;
+}
+
+function normalizeLspRange(range: Diagnostic["range"]): NormalizedDiagnostic["range"] {
+  if (!range || !range.start || !range.end) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "diagnostic range is malformed");
+  }
+  const values = [range.start.line, range.start.character, range.end.line, range.end.character];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "diagnostic range must contain non-negative integer coordinates");
+  }
+  if (range.end.line < range.start.line
+    || (range.end.line === range.start.line && range.end.character < range.start.character)) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "diagnostic range end precedes its start");
+  }
+  return {
+    start: { line: range.start.line, character: range.start.character },
+    end: { line: range.end.line, character: range.end.character },
+  };
+}
+
+function normalizeLegacyRange(
+  start: { line: number; offset: number },
+  end: { line: number; offset: number },
+): NormalizedDiagnostic["range"] {
+  if (!start || !end) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic range is malformed");
+  }
+  const values = [start.line, start.offset, end.line, end.offset];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 1)) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic range must contain positive integer locations");
+  }
+  if (end.line < start.line || (end.line === start.line && end.offset < start.offset)) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic range end precedes its start");
+  }
+  return {
+    start: { line: start.line - 1, character: start.offset - 1 },
+    end: { line: end.line - 1, character: end.offset - 1 },
+  };
+}
+
+function normalizeLspSeverity(severity: number | undefined): NormalizedDiagnosticSeverity {
+  if (severity === 1) return "error";
+  if (severity === 2) return "warning";
+  if (severity === 3) return "information";
+  if (severity === 4) return "hint";
+  return "unknown";
+}
+
+function normalizeLegacySeverity(category: string): NormalizedDiagnosticSeverity {
+  if (category === "error") return "error";
+  if (category === "warning") return "warning";
+  if (category === "message") return "information";
+  if (category === "suggestion") return "hint";
+  return "unknown";
+}
+
+function normalizeDiagnosticCode(code: unknown): string | number | null {
+  return typeof code === "string" || typeof code === "number" ? code : null;
+}
+
+function compareDiagnostics(left: NormalizedDiagnostic, right: NormalizedDiagnostic): number {
+  const coordinates = [
+    left.range.start.line - right.range.start.line,
+    left.range.start.character - right.range.start.character,
+    left.range.end.line - right.range.end.line,
+    left.range.end.character - right.range.end.character,
+  ];
+  for (const delta of coordinates) if (delta !== 0) return delta;
+  const leftFields = [
+    left.severity,
+    String(left.code ?? ""),
+    left.source ?? "",
+    left.message,
+    left.kind,
+    canonicalJson(left.related_information),
+  ];
+  const rightFields = [
+    right.severity,
+    String(right.code ?? ""),
+    right.source ?? "",
+    right.message,
+    right.kind,
+    canonicalJson(right.related_information),
+  ];
+  for (let index = 0; index < leftFields.length; index += 1) {
+    const delta = leftFields[index]!.localeCompare(rightFields[index]!);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+async function normalizeLspRelatedInformation(
+  diagnostic: Diagnostic,
+  candidate: CandidateDescriptor,
+  profile: TypeScriptProfile,
+  roots: DiagnosticBindingRoots,
+): Promise<NormalizedDiagnosticRelatedInformation[]> {
+  const related = await Promise.all((diagnostic.relatedInformation ?? []).map(async (item) => {
+    if (!item
+      || typeof item.message !== "string"
+      || !item.location
+      || typeof item.location.uri !== "string"
+      || item.location.uri.length === 0) {
+      throw new ReviewLspError("LSP_PROTOCOL_ERROR", "LSP diagnostic related information is malformed");
+    }
+    const binding = await bindSemanticTargetUri(candidate, profile, item.location.uri, roots);
+    return {
+      message: item.message,
+      code: null,
+      severity: "unknown" as const,
+      range: normalizeLspRange(item.location.range),
+      uri: item.location.uri,
+      binding,
+    };
+  }));
+  return related.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+}
+
+async function normalizeLegacyRelatedInformation(
+  related: LegacyDiagnosticRelatedInformation[] | undefined,
+  candidate: CandidateDescriptor,
+  profile: TypeScriptProfile,
+  roots: DiagnosticBindingRoots,
+): Promise<NormalizedDiagnosticRelatedInformation[]> {
+  const normalized = await Promise.all((related ?? []).map(async (item) => {
+    if (!item || typeof item.message !== "string" || typeof item.category !== "string") {
+      throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic related information is malformed");
+    }
+    if (!item.span) {
+      return {
+        message: item.message,
+        code: normalizeDiagnosticCode(item.code),
+        severity: normalizeLegacySeverity(item.category),
+        range: null,
+        uri: null,
+        binding: null,
+      };
+    }
+    if (typeof item.span.file !== "string" || item.span.file.length === 0) {
+      throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic related span has no file");
+    }
+    const uri = URI.file(item.span.file).toString();
+    const binding = await bindSemanticTargetUri(candidate, profile, uri, roots);
+    return {
+      message: item.message,
+      code: normalizeDiagnosticCode(item.code),
+      severity: normalizeLegacySeverity(item.category),
+      range: normalizeLegacyRange(item.span.start, item.span.end),
+      uri,
+      binding,
+    };
+  }));
+  return normalized.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+}
+
+async function normalizeLspDiagnostic(
+  diagnostic: Diagnostic,
+  candidate: CandidateDescriptor,
+  profile: TypeScriptProfile,
+  roots: DiagnosticBindingRoots,
+): Promise<NormalizedDiagnostic> {
+  if (!diagnostic || typeof diagnostic.message !== "string") {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "LSP diagnostic is malformed");
+  }
+  return {
+    kind: "engine",
+    range: normalizeLspRange(diagnostic.range),
+    severity: normalizeLspSeverity(diagnostic.severity),
+    code: normalizeDiagnosticCode(diagnostic.code),
+    source: typeof diagnostic.source === "string" ? diagnostic.source : null,
+    message: diagnostic.message,
+    tags: {
+      unnecessary: diagnostic.tags?.includes(1) ?? false,
+      deprecated: diagnostic.tags?.includes(2) ?? false,
+    },
+    related_information: await normalizeLspRelatedInformation(diagnostic, candidate, profile, roots),
+  };
+}
+
+async function normalizeLegacyDiagnostic(
+  diagnostic: LegacyDiagnostic,
+  kind: "syntactic" | "semantic" | "suggestion",
+  candidate: CandidateDescriptor,
+  profile: TypeScriptProfile,
+  roots: DiagnosticBindingRoots,
+): Promise<NormalizedDiagnostic> {
+  if (!diagnostic
+    || typeof diagnostic.text !== "string"
+    || typeof diagnostic.category !== "string"
+    || !diagnostic.start
+    || !diagnostic.end) {
+    throw new ReviewLspError("LSP_PROTOCOL_ERROR", "legacy diagnostic is malformed");
+  }
+  return {
+    kind,
+    range: normalizeLegacyRange(diagnostic.start, diagnostic.end),
+    severity: normalizeLegacySeverity(diagnostic.category),
+    code: normalizeDiagnosticCode(diagnostic.code),
+    source: typeof diagnostic.source === "string" ? diagnostic.source : null,
+    message: diagnostic.text,
+    tags: {
+      unnecessary: diagnostic.reportsUnnecessary !== undefined,
+      deprecated: diagnostic.reportsDeprecated !== undefined,
+    },
+    related_information: await normalizeLegacyRelatedInformation(
+      diagnostic.relatedInformation,
+      candidate,
+      profile,
+      roots,
+    ),
+  };
+}
+
+async function normalizeDiagnostics(
+  transport: DiagnosticTransportOutcome,
+  candidate: CandidateDescriptor,
+  profile: TypeScriptProfile,
+  roots: DiagnosticBindingRoots,
+): Promise<{ diagnostics: NormalizedDiagnostic[]; hasUnboundRelatedInformation: boolean }> {
+  let diagnostics: NormalizedDiagnostic[];
+  if (transport.kind === "LSP_DOCUMENT_DIAGNOSTIC") {
+    diagnostics = await Promise.all(
+      transport.diagnostics.map((diagnostic) => normalizeLspDiagnostic(diagnostic, candidate, profile, roots)),
+    );
+  } else {
+    const groups: Array<{
+      kind: "syntactic" | "semantic" | "suggestion";
+      diagnostics: LegacyDiagnostic[];
+    }> = [
+      { kind: "syntactic", diagnostics: transport.syntactic },
+      { kind: "semantic", diagnostics: transport.semantic },
+      { kind: "suggestion", diagnostics: transport.suggestion },
+    ];
+    diagnostics = (await Promise.all(groups.flatMap(({ kind, diagnostics: values }) => values.map(
+      (diagnostic) => normalizeLegacyDiagnostic(diagnostic, kind, candidate, profile, roots),
+    ))));
+  }
+  diagnostics.sort(compareDiagnostics);
+  const hasUnboundRelatedInformation = diagnostics.some((diagnostic) =>
+    diagnostic.related_information.some((item) => item.binding?.classification === "UNBOUND"));
+  return { diagnostics, hasUnboundRelatedInformation };
 }
 
 export class SemanticSession {
@@ -391,6 +641,10 @@ export class SemanticSession {
     return this.query("references", input);
   }
 
+  async diagnostics(input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
+    return this.queryDiagnostics(input);
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -407,6 +661,179 @@ export class SemanticSession {
       return;
     }
     if (this.snapshot) await verifyDependencySnapshot(this.snapshot);
+  }
+
+  private async queryDiagnostics(input: DiagnosticsQueryInput): Promise<DiagnosticsReceipt> {
+    this.ensureOpen();
+    await verifyCandidateIntegrity(this.candidate);
+    await verifyTypeScriptProfile(this.profile);
+    await this.verifySemanticEnvironment();
+
+    const absolute = this.projection
+      ? admittedProjectionPath(this.projection, this.candidate, input.path)
+      : admittedCandidatePath(this.candidate, input.path);
+    const languageId = languageIdForPath(input.path);
+    if (!languageId) {
+      throw new ReviewLspError("CANDIDATE_PATH_INVALID", `unsupported document extension: ${input.path}`);
+    }
+    const sourceEntry = this.candidate.entries.find((entry) => entry.path === input.path && entry.kind === "file");
+    if (!sourceEntry) {
+      throw new ReviewLspError("CANDIDATE_PATH_INVALID", `document is not an admitted candidate file: ${input.path}`);
+    }
+    if (sourceEntry.byte_count > this.profile.document_limit_bytes) {
+      throw new ReviewLspError(
+        "CANDIDATE_RESOURCE_LIMIT",
+        `document ${input.path} is ${sourceEntry.byte_count} bytes; profile limit is ${this.profile.document_limit_bytes}`,
+      );
+    }
+
+    const documentBytes = await readCandidateFile(this.candidate, input.path);
+    const document = await this.driver.openDocument({
+      path: absolute,
+      text: documentBytes.bytes.toString("utf8"),
+      languageId,
+    });
+
+    const resolvingProject = resolveProjectForDocument(this.candidate, input.path);
+    if (this.boundResolvingProject
+      && resolvingProjectIdentity(this.boundResolvingProject) !== resolvingProjectIdentity(resolvingProject)) {
+      throw new ReviewLspError(
+        "PROFILE_INVALID",
+        "semantic session is bound to a different resolving project; acquire a project-specific runtime",
+      );
+    }
+    const projectToolchain = await resolveProjectToolchain({
+      candidate: this.candidate,
+      snapshot: this.snapshot,
+      projectRoot: resolvingProject.project_root,
+    });
+    const strongAdmission = engineMayClaimExactProject({
+      artifact: this.candidateEngine,
+      profile: this.executionProfileEvidence,
+    });
+    const assessment = assessToolchainAlignment({
+      projectVersion: projectToolchain.version,
+      projectVersionSource: projectToolchain.source,
+      engineVersion: this.driver.launch.typescriptVersion,
+      engineIsProjectAdmitted: this.driver.launch.projectEngineAdmitted,
+    });
+    const semanticToolchain: SemanticToolchainEvidence = {
+      resolving_project: resolvingProject,
+      resolving_project_identity: resolvingProjectIdentity(resolvingProject),
+      project_toolchain: { typescript_version: projectToolchain.version, source: projectToolchain.source },
+      semantic_engine: {
+        implementation: this.driver.launch.implementation,
+        typescript_version: this.driver.launch.typescriptVersion,
+        is_project_admitted: this.driver.launch.projectEngineAdmitted,
+      },
+      candidate_engine: this.candidateEngine
+        ? {
+            artifact_id: this.candidateEngine.artifact_id,
+            version: this.candidateEngine.version,
+            engine_kind: this.candidateEngine.engine_kind,
+            tree_manifest_sha256: this.candidateEngine.tree_manifest_sha256,
+            native_runtime_tree_manifest_sha256: this.candidateEngine.native_runtime?.tree_manifest_sha256 ?? null,
+          }
+        : null,
+      execution_profile: {
+        kind: this.executionProfileEvidence.kind,
+        enforced: this.executionProfileEvidence.enforced,
+        identity: this.executionProfileEvidence.identity,
+      },
+      toolchain_alignment: assessment.alignment,
+      toolchain_alignment_reason: assessment.reason,
+      exact_project_blocked_by: assessment.alignment === "EXACT_PROJECT"
+        ? null
+        : strongAdmission.reason ?? assessment.reason,
+    };
+
+    let environmentBinding: BindingState = this.environment.binding;
+    const limitations = [...this.environment.limitations];
+    if (alignmentBlocksStrongAdmission(assessment.alignment)) {
+      environmentBinding = "PARTIAL";
+      if (assessment.reason) limitations.push(assessment.reason);
+    }
+
+    const transport = await this.driver.diagnostics(document);
+    const roots: DiagnosticBindingRoots = {
+      executionRoot: this.projection?.execution_root ?? this.candidate.source_root,
+      dependencyRoot: this.snapshot?.dependency_root,
+      derivedRoots: this.projection?.derived_artifact_roots ?? [],
+    };
+    const normalized = await normalizeDiagnostics(transport, this.candidate, this.profile, roots);
+    if (normalized.hasUnboundRelatedInformation) {
+      environmentBinding = "PARTIAL";
+      limitations.push("diagnostic related information includes a URI outside every admitted root");
+    }
+    limitations.push(
+      "document diagnostics are language-service semantic evidence for the requested document; they are not proof of project-wide build, test, lint, bundler, framework, or code-generation correctness",
+    );
+    if (transport.kind === "TSSERVER_SYNC_DIAGNOSTICS") {
+      limitations.push(
+        "legacy diagnostics completeness is limited to the fixed syntax, semantic, and suggestion tsserver diagnostic set",
+      );
+    }
+
+    await verifyCandidateIntegrity(this.candidate);
+    await verifyTypeScriptProfile(this.profile);
+    await this.verifySemanticEnvironment();
+
+    const resultBytes = Buffer.byteLength(canonicalJson(normalized.diagnostics), "utf8");
+    if (resultBytes > this.profile.result_limit_bytes) {
+      throw new ReviewLspError(
+        "CANDIDATE_RESOURCE_LIMIT",
+        `diagnostics result is ${resultBytes} bytes; profile limit is ${this.profile.result_limit_bytes}`,
+      );
+    }
+
+    return persistDiagnosticsReceipt(this.stateDirectory, {
+      schema_version: "review-lsp.diagnostics-receipt.v1",
+      candidate: {
+        candidate_id: this.candidate.candidate_id,
+        repository_identity: this.candidate.repository_identity,
+        git_object_format: this.candidate.git_object_format,
+        commit_oid: this.candidate.commit_oid,
+        tree_oid: this.candidate.tree_oid,
+        source_manifest_sha256: this.candidate.source_manifest_sha256,
+      },
+      environment_manifest_sha256: this.environment.environment_manifest_sha256,
+      profile_sha256: this.profile.profile_sha256,
+      session_id: this.sessionId,
+      session_epoch: this.sessionEpoch,
+      operation: "diagnostics",
+      document: {
+        path: input.path,
+        uri: document.uri,
+        sha256: documentBytes.sha256,
+        version: document.version,
+        language_id: document.languageId,
+        position_encoding: "utf-16",
+      },
+      request: { scope: "document" },
+      transport: {
+        kind: transport.kind,
+        protocol_operations: [...transport.protocolOperations],
+        diagnostic_provider: transport.kind === "LSP_DOCUMENT_DIAGNOSTIC"
+          ? {
+              identifier: transport.diagnosticProvider.identifier,
+              inter_file_dependencies: transport.diagnosticProvider.interFileDependencies,
+              workspace_diagnostics: transport.diagnosticProvider.workspaceDiagnostics,
+            }
+          : null,
+      },
+      execution_status: "OK",
+      source_binding: "VERIFIED",
+      environment_binding: environmentBinding,
+      semantic_toolchain: semanticToolchain,
+      isolation: this.isolation,
+      result_scope: "DOCUMENT_DIAGNOSTICS",
+      completeness: "ENGINE_FULL_DOCUMENT_RESPONSE",
+      limitations: [...new Set(limitations)],
+      result: normalized.diagnostics,
+      result_sha256: sha256(canonicalJson(normalized.diagnostics)),
+      request_duration_ms: Math.round(transport.durationMs * 1000) / 1000,
+      observed_at: new Date().toISOString(),
+    });
   }
 
   private async query(

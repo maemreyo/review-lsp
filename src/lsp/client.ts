@@ -11,6 +11,7 @@ import {
 import {
   DefinitionRequest,
   DidOpenTextDocumentNotification,
+  DocumentDiagnosticRequest,
   ExitNotification,
   HoverRequest,
   InitializeRequest,
@@ -18,6 +19,8 @@ import {
   InitializedNotification,
   ShutdownRequest,
   type Definition,
+  type Diagnostic,
+  type DocumentDiagnosticReport,
   type Hover,
   type InitializeResult,
   type Location,
@@ -49,6 +52,66 @@ export interface OpenDocument {
   version: number;
   text: string;
 }
+
+export interface LegacyDiagnosticLocation {
+  line: number;
+  offset: number;
+}
+
+export interface LegacyDiagnosticRelatedInformation {
+  category: string;
+  code: number;
+  message: string;
+  span?: {
+    file: string;
+    start: LegacyDiagnosticLocation;
+    end: LegacyDiagnosticLocation;
+  };
+}
+
+export interface LegacyDiagnostic {
+  start: LegacyDiagnosticLocation;
+  end: LegacyDiagnosticLocation;
+  text: string;
+  category: string;
+  reportsUnnecessary?: unknown;
+  reportsDeprecated?: unknown;
+  relatedInformation?: LegacyDiagnosticRelatedInformation[];
+  code?: number;
+  source?: string;
+}
+
+interface LegacyDiagnosticResponse {
+  type: "response";
+  command: string;
+  success: true;
+  body: LegacyDiagnostic[];
+}
+
+export type DiagnosticTransportOutcome =
+  | {
+      kind: "LSP_DOCUMENT_DIAGNOSTIC";
+      diagnostics: Diagnostic[];
+      diagnosticProvider: {
+        identifier: string | null;
+        interFileDependencies: boolean | null;
+        workspaceDiagnostics: boolean | null;
+      };
+      protocolOperations: ["textDocument/diagnostic"];
+      durationMs: number;
+    }
+  | {
+      kind: "TSSERVER_SYNC_DIAGNOSTICS";
+      syntactic: LegacyDiagnostic[];
+      semantic: LegacyDiagnostic[];
+      suggestion: LegacyDiagnostic[];
+      protocolOperations: [
+        "syntacticDiagnosticsSync",
+        "semanticDiagnosticsSync",
+        "suggestionDiagnosticsSync",
+      ];
+      durationMs: number;
+    };
 
 export class StdioLspDriver {
   private readonly child: ChildProcessWithoutNullStreams;
@@ -128,6 +191,7 @@ export class StdioLspDriver {
           hover: { dynamicRegistration: false, contentFormat: ["markdown", "plaintext"] },
           definition: { dynamicRegistration: false, linkSupport: true },
           references: { dynamicRegistration: false },
+          diagnostic: { dynamicRegistration: false, relatedDocumentSupport: false },
         },
         workspace: {
           configuration: true,
@@ -206,6 +270,100 @@ export class StdioLspDriver {
       position: { line, character },
       context: { includeDeclaration },
     });
+  }
+
+  async diagnostics(document: OpenDocument): Promise<DiagnosticTransportOutcome> {
+    const started = performance.now();
+    const diagnosticProvider = this.capabilities?.diagnosticProvider;
+    if (diagnosticProvider) {
+      const response = await this.request<DocumentDiagnosticReport>(DocumentDiagnosticRequest.method, {
+        textDocument: { uri: document.uri },
+      });
+      if (!response.value || response.value.kind !== "full") {
+        throw new ReviewLspError(
+          "LSP_PROTOCOL_ERROR",
+          "document diagnostics requires a full report when no previous result id was supplied",
+        );
+      }
+      if (!Array.isArray((response.value as { items?: unknown }).items)) {
+        throw new ReviewLspError("LSP_PROTOCOL_ERROR", "document diagnostics full report must contain an items array");
+      }
+      if (Object.prototype.hasOwnProperty.call(response.value, "relatedDocuments")
+        && response.value.relatedDocuments !== undefined) {
+        throw new ReviewLspError(
+          "LSP_PROTOCOL_ERROR",
+          "document diagnostics response widened scope with relatedDocuments",
+        );
+      }
+      const provider = diagnosticProvider as {
+        identifier?: unknown;
+        interFileDependencies?: unknown;
+        workspaceDiagnostics?: unknown;
+      };
+      return {
+        kind: "LSP_DOCUMENT_DIAGNOSTIC",
+        diagnostics: response.value.items,
+        diagnosticProvider: {
+          identifier: typeof provider.identifier === "string" ? provider.identifier : null,
+          interFileDependencies: typeof provider.interFileDependencies === "boolean"
+            ? provider.interFileDependencies
+            : null,
+          workspaceDiagnostics: typeof provider.workspaceDiagnostics === "boolean"
+            ? provider.workspaceDiagnostics
+            : null,
+        },
+        protocolOperations: ["textDocument/diagnostic"],
+        durationMs: Math.max(0, performance.now() - started),
+      };
+    }
+
+    const executeCommands = this.capabilities?.executeCommandProvider?.commands ?? [];
+    if (!executeCommands.includes("typescript.tsserverRequest")) {
+      throw new ReviewLspError(
+        "LSP_CAPABILITY_UNSUPPORTED",
+        "server exposes neither diagnosticProvider nor typescript.tsserverRequest",
+      );
+    }
+
+    const deadline = started + this.requestTimeoutMs;
+    const requestLegacy = async (command: string): Promise<LegacyDiagnostic[]> => {
+      const remaining = Math.floor(deadline - performance.now());
+      if (remaining <= 0) {
+        throw new ReviewLspError("LSP_TIMEOUT", "legacy diagnostics exceeded the shared semantic request deadline");
+      }
+      const response = await this.request<unknown>("workspace/executeCommand", {
+        command: "typescript.tsserverRequest",
+        arguments: [command, { file: document.uri }],
+      }, remaining);
+      const value = response.value as Partial<LegacyDiagnosticResponse> | null;
+      if (!value
+        || value.type !== "response"
+        || value.command !== command
+        || value.success !== true
+        || !Array.isArray(value.body)) {
+        throw new ReviewLspError(
+          "LSP_PROTOCOL_ERROR",
+          `legacy diagnostics command ${command} returned a malformed or unsuccessful response`,
+        );
+      }
+      return value.body;
+    };
+
+    const syntactic = await requestLegacy("syntacticDiagnosticsSync");
+    const semantic = await requestLegacy("semanticDiagnosticsSync");
+    const suggestion = await requestLegacy("suggestionDiagnosticsSync");
+    return {
+      kind: "TSSERVER_SYNC_DIAGNOSTICS",
+      syntactic,
+      semantic,
+      suggestion,
+      protocolOperations: [
+        "syntacticDiagnosticsSync",
+        "semanticDiagnosticsSync",
+        "suggestionDiagnosticsSync",
+      ],
+      durationMs: Math.max(0, performance.now() - started),
+    };
   }
 
   async shutdown(): Promise<void> {
