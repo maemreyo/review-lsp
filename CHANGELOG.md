@@ -6,6 +6,30 @@ The project is currently prerelease software. Until 1.0, minor versions may incl
 
 ## Unreleased
 
+## 0.1.0-alpha.6 — 2026-09-23
+
+### Added
+
+- Exact candidate-bound TypeScript project ownership and semantic routing for the admitted `files`, `include`, `exclude`, and relative-`extends` subset.
+- Deterministic `EnvironmentManifest.project_ownership` evidence with per-config membership digests and aggregate model identity.
+- Explicit `RESOLVED`, `UNRESOLVED`, `AMBIGUOUS`, and `UNSUPPORTED` routing outcomes; ambiguous ownership does not fall back to nearest-config heuristics.
+- Resolving-project ownership identity bound into semantic runtime/session reuse and semantic receipts.
+- Minimal `compilerOptions.allowJs` / `jsconfig.json` membership semantics required to reproduce TypeScript include extension eligibility.
+
+### Security / correctness
+
+- Candidate config bytes used for ownership analysis are read through the same candidate-integrity boundary as Alpha.5 project-reference evidence.
+- Relative `extends` preserves the declaration origin of inherited `files` / `include` / `exclude` rules instead of rebasing inherited paths onto child configs.
+- Explicit `files` membership remains independent of include extension discovery; include-derived ownership is limited to TypeScript-family files by default and JavaScript-family files only with effective `allowJs=true`.
+- Unrelated standalone `tsconfig.*.json` limitations remain content-addressed evidence without poisoning otherwise provable routing; routing-relevant unsupported config still fails closed.
+- Direct semantic sessions cannot answer a document owned by a project unless the session is bound to the same exact resolving-project identity.
+
+### Evidence
+
+- Independent implementation review found one MEDIUM include-extension/`allowJs` mismatch; successor commit `fcbcbf83c06597e3d7d0c7ae8467a0549f4ad36e` addressed it and successor review finalized CURRENT/MATCHES with no findings.
+- Ownership unit/typecheck, core routing/runtime regressions, and full TypeScript 6/7 semantic conformance passed on the successor candidate.
+- Real Zamery Workbench consumer dogfood proved a nested document routes to an evidence-proven root project rather than a nearer non-owning config while preserving exact candidate A semantics after live checkout advanced to B.
+
 ## 0.1.0-alpha.5 — 2026-09-23
 
 ### Added

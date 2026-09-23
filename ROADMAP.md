@@ -4,7 +4,7 @@ Review-LSP is intentionally developing from a narrow, verifiable vertical slice 
 
 This is a direction document, not a compatibility promise.
 
-## Current baseline — 0.1.0-alpha.5
+## Current baseline — 0.1.0-alpha.6
 
 The dependency-aware TypeScript path is implemented for an admitted subset:
 
@@ -18,15 +18,16 @@ The dependency-aware TypeScript path is implemented for an admitted subset:
 - hover and definition with provenance-bound receipts;
 - references with explicit declaration-inclusion identity and per-target provenance;
 - document diagnostics with deterministic TypeScript 6/7 transports, separate receipts, related-information provenance and engine-full-document completeness;
-- candidate-contained TypeScript project-reference graphs admitted into deterministic environment evidence for the frozen Alpha.5 subset.
+- candidate-contained TypeScript project-reference graphs admitted into deterministic environment evidence for the frozen Alpha.5 subset;
+- exact candidate-bound TypeScript project ownership and semantic routing for the frozen Alpha.6 `files` / `include` / `exclude` / relative-`extends` subset, with only the minimal `allowJs` membership modifier needed to reproduce include extension eligibility.
 
-Project references in Alpha.5 are an admission/evidence hardening step, not a claim of universal TypeScript build-mode graph completeness. Exact `files`/`include` ownership and broader config chains remain separate work. Diagnostics remain semantic evidence for one admitted document, not project-wide build correctness. Symbols remain deferred.
+Alpha.6 proves project ownership by admitted membership evidence rather than nearest-config proximity. Ambiguous or unsupported ownership fails closed instead of selecting a project heuristically, and resolving-project identity is bound into runtime/session reuse and semantic receipts. This remains narrower than the full TypeScript project model: default file discovery, package-based `extends`, broader config/package shapes, and arbitrary build-mode behavior remain separate work. Diagnostics remain semantic evidence for one admitted document, not project-wide build correctness. Symbols remain deferred.
 
 This is not universal dependency-project support. Unsupported or ambiguous package-manager, workspace, config, package-export, local-directory and build-pipeline surfaces remain PARTIAL or UNSUPPORTED.
 
-The frozen Alpha.5 implementation authority is `docs/design-notes/ALPHA5_PROJECT_REFERENCE_MASTER_PLAN.md`; the Alpha.4 semantic-operation authority remains historical context in `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
+The frozen Alpha.6 implementation authority is `docs/design-notes/ALPHA6_PROJECT_OWNERSHIP_ROUTING_MASTER_PLAN.md`; Alpha.5 project-reference authority remains preserved in `docs/design-notes/ALPHA5_PROJECT_REFERENCE_MASTER_PLAN.md`, and the Alpha.4 semantic-operation authority remains historical context in `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
 
-## Near term — post-Alpha.5 hardening
+## Near term — post-Alpha.6 hardening
 
 ### Richer provenance
 
@@ -57,10 +58,10 @@ prepare candidate
 
 ### General-project completeness
 
-After semantic breadth is stable, continue strengthening the TypeScript support matrix without weakening admission:
+After exact ownership/routing, continue strengthening the TypeScript support matrix without weakening admission:
 
-- exact `files`/`include` ownership and project routing;
-- more TypeScript config chains;
+- TypeScript default file-discovery semantics and broader config chains;
+- package-based `extends` where it can be admitted exactly;
 - more package exports/imports shapes;
 - more workspace routing cases;
 - broader pnpm project shapes backed by exact evidence.
