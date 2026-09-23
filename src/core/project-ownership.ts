@@ -5,6 +5,7 @@ import { readCandidateFile } from "./candidate.js";
 import { analyzeProjectReferences } from "./project-references.js";
 import type {
   CandidateDescriptor,
+  ProjectOwnershipAllowJsEvidence,
   ProjectOwnershipConfigEvidence,
   ProjectOwnershipEvidence,
   ProjectOwnershipRuleEvidence,
@@ -26,6 +27,7 @@ interface ParsedConfig {
   ownFiles: ProjectOwnershipRuleEvidence | null | undefined;
   ownInclude: ProjectOwnershipRuleEvidence | null | undefined;
   ownExclude: ProjectOwnershipRuleEvidence | null | undefined;
+  ownAllowJs: ProjectOwnershipAllowJsEvidence | undefined;
 }
 
 interface EffectiveConfig {
@@ -98,6 +100,16 @@ function projectRoot(configPath: string): string {
 function isConventionalProjectConfig(path: string): boolean {
   const name = posix.basename(path);
   return name === "tsconfig.json" || name === "jsconfig.json";
+}
+
+function implicitAllowJs(configPath: string): ProjectOwnershipAllowJsEvidence | undefined {
+  return posix.basename(configPath) === "jsconfig.json"
+    ? { value: true, origin_config_path: configPath, source: "JSCONFIG_DEFAULT" }
+    : undefined;
+}
+
+function typescriptDefaultAllowJs(): ProjectOwnershipAllowJsEvidence {
+  return { value: false, origin_config_path: null, source: "TYPESCRIPT_DEFAULT" };
 }
 
 function invalidPortablePath(value: string): string | null {
@@ -259,8 +271,16 @@ function matchesRule(rule: ProjectOwnershipRuleEvidence | null, documentPath: st
   return rule.values.some((pattern) => globRegex(pattern).test(documentPath));
 }
 
+function includeExtensionEligible(documentPath: string, allowJs: boolean): boolean {
+  const extension = posix.extname(documentPath);
+  if ([".ts", ".tsx", ".mts", ".cts"].includes(extension)) return true;
+  if (allowJs && [".js", ".jsx", ".mjs", ".cjs"].includes(extension)) return true;
+  return false;
+}
+
 function effectiveMembership(config: ProjectOwnershipConfigEvidence, documentPath: string): boolean {
   if (config.effective_files?.values.includes(documentPath)) return true;
+  if (!includeExtensionEligible(documentPath, config.effective_allow_js.value)) return false;
   if (!matchesRule(config.effective_include, documentPath)) return false;
   return !matchesRule(config.effective_exclude, documentPath);
 }
@@ -384,11 +404,29 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
       ownFiles: undefined,
       ownInclude: undefined,
       ownExclude: undefined,
+      ownAllowJs: implicitAllowJs(entry.path),
     });
   }
 
   for (const config of parsed.values()) {
     if (!config.value) continue;
+    const compilerOptions = config.value.compilerOptions;
+    if (compilerOptions !== undefined) {
+      if (!isObject(compilerOptions)) {
+        config.limitations.push(`${config.path} compilerOptions must be an object for allowJs admission`);
+      } else if (Object.prototype.hasOwnProperty.call(compilerOptions, "allowJs")) {
+        if (typeof compilerOptions.allowJs !== "boolean") {
+          config.limitations.push(`${config.path} compilerOptions.allowJs must be a boolean`);
+        } else {
+          config.ownAllowJs = {
+            value: compilerOptions.allowJs,
+            origin_config_path: config.path,
+            source: "EXPLICIT",
+          };
+        }
+      }
+    }
+
     const extendsValue = config.value.extends;
     if (extendsValue !== undefined) {
       if (typeof extendsValue !== "string") {
@@ -455,6 +493,7 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
           effective_files: null,
           effective_include: null,
           effective_exclude: null,
+          effective_allow_js: config.ownAllowJs ?? typescriptDefaultAllowJs(),
           limitations: [`${config.path} extends chain exceeds depth limit ${MAX_EXTENDS_DEPTH}`],
           membership_sha256: sha256(canonicalJson({ path: config.path, state: "DEPTH_EXCEEDED" })),
         },
@@ -476,6 +515,7 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
           effective_files: null,
           effective_include: null,
           effective_exclude: null,
+          effective_allow_js: config.ownAllowJs ?? typescriptDefaultAllowJs(),
           limitations: [`project ownership extends cycle: ${cycle.join(" -> ")}`],
           membership_sha256: sha256(canonicalJson({ path: config.path, cycle })),
         },
@@ -490,6 +530,7 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
     const effectiveFiles = config.ownFiles !== undefined ? config.ownFiles : parent?.evidence.effective_files ?? null;
     const effectiveInclude = config.ownInclude !== undefined ? config.ownInclude : parent?.evidence.effective_include ?? null;
     const effectiveExclude = config.ownExclude !== undefined ? config.ownExclude : parent?.evidence.effective_exclude ?? null;
+    const effectiveAllowJs = config.ownAllowJs ?? parent?.evidence.effective_allow_js ?? typescriptDefaultAllowJs();
     const chain = parent
       ? [{ path: parent.evidence.path, sha256: parent.evidence.sha256 }, ...parent.evidence.extends_chain]
       : [];
@@ -507,6 +548,7 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
       effective_files: effectiveFiles,
       effective_include: effectiveInclude,
       effective_exclude: effectiveExclude,
+      effective_allow_js: effectiveAllowJs,
       limitations: uniqueLimitations,
     };
     const result: EffectiveConfig = {

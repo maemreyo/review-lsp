@@ -84,6 +84,12 @@ export interface ProjectOwnershipRuleEvidence {
   values: string[];
 }
 
+export interface ProjectOwnershipAllowJsEvidence {
+  value: boolean;
+  origin_config_path: string | null;
+  source: "EXPLICIT" | "JSCONFIG_DEFAULT" | "TYPESCRIPT_DEFAULT";
+}
+
 export interface ProjectOwnershipConfigEvidence {
   path: string;
   sha256: string;
@@ -94,6 +100,7 @@ export interface ProjectOwnershipConfigEvidence {
   effective_files: ProjectOwnershipRuleEvidence | null;
   effective_include: ProjectOwnershipRuleEvidence | null;
   effective_exclude: ProjectOwnershipRuleEvidence | null;
+  effective_allow_js: ProjectOwnershipAllowJsEvidence;
   limitations: string[];
   membership_sha256: string;
 }

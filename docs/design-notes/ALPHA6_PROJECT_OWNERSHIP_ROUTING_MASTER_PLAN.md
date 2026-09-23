@@ -142,7 +142,7 @@ Alpha.6 evaluates only these top-level config fields:
 - `exclude`
 - `extends`
 
-Compiler options may affect semantic execution, but they are not independently expanded into the ownership language except where an already-supported property is strictly necessary to interpret this frozen subset.
+Compiler options may affect semantic execution, but they are not independently expanded into the ownership language except where a property is strictly necessary to interpret this frozen subset. Alpha.6 admits only `compilerOptions.allowJs` for membership: `include` may own JS-family files only when effective `allowJs=true`; `jsconfig.json` contributes TypeScript's implicit `allowJs=true` unless explicitly overridden. This value follows the admitted relative-`extends` chain and is content-addressed in ownership evidence. No other `compilerOptions` semantics are added by this correction.
 
 ### 6.1 `files`
 
@@ -185,7 +185,9 @@ Not admitted in Alpha.6:
 - URL/scheme-like patterns;
 - candidate-root escape.
 
-Patterns are evaluated only against admitted candidate files and are rooted relative to the config where the `include` property originates.
+Patterns are evaluated only against admitted candidate files and are rooted relative to the config where the `include` property originates. Include membership also applies TypeScript's supported-extension gate for this frozen subset: TS-family (`.ts`, `.tsx`, `.mts`, `.cts`, including declaration variants by suffix) is eligible by default; JS-family (`.js`, `.jsx`, `.mjs`, `.cjs`) is eligible only when effective `allowJs=true`; other extensions are not owned through `include`.
+
+This extension gate applies only to `include`. Explicit `files` entries remain explicit membership even for extensions that would not be discovered by `include`, matching TypeScript config parsing behavior.
 
 Alpha.6 does not scan the ambient filesystem.
 
@@ -261,6 +263,7 @@ Introduce deterministic candidate-bound project-ownership evidence. Naming may v
 - per-config limitations, including limitations retained as non-blocking evidence for unrelated standalone configs;
 - admitted relative `extends` chain with exact config digests;
 - effective `files/include/exclude` rule origin and normalized values;
+- effective `allowJs` value, its origin/default source, and inheritance effect on include-eligible extensions;
 - deterministic membership digest per config;
 - deterministic aggregate ownership-model digest.
 

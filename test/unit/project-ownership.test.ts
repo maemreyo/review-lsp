@@ -74,6 +74,146 @@ describe("project ownership admission", () => {
     expect(resolveProjectOwner(analysis, "src/a.ts").state).toBe("UNRESOLVED");
   });
 
+  it("filters include membership by TypeScript-supported extensions when allowJs is false", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ include: ["src/**/*"] }),
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.tsx": "export const b = 1;\n",
+      "src/c.mts": "export const c = 1;\n",
+      "src/d.cts": "export const d = 1;\n",
+      "src/e.js": "export const e = 1;\n",
+      "src/f.jsx": "export const f = 1;\n",
+      "src/g.mjs": "export const g = 1;\n",
+      "src/h.cjs": "export const h = 1;\n",
+      "src/i.json": "{}\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    const root = analysis.evidence.configs.find((entry) => entry.path === "tsconfig.json");
+    expect(root?.effective_allow_js).toEqual({
+      value: false,
+      origin_config_path: null,
+      source: "TYPESCRIPT_DEFAULT",
+    });
+    for (const path of ["src/a.ts", "src/b.tsx", "src/c.mts", "src/d.cts"]) {
+      expect(resolveProjectOwner(analysis, path)).toMatchObject({
+        state: "RESOLVED",
+        config_path: "tsconfig.json",
+      });
+    }
+    for (const path of ["src/e.js", "src/f.jsx", "src/g.mjs", "src/h.cjs", "src/i.json"]) {
+      expect(resolveProjectOwner(analysis, path).state).toBe("UNRESOLVED");
+    }
+  });
+
+  it("admits JS-family include membership only when effective allowJs is true", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({
+        compilerOptions: { allowJs: true },
+        include: ["src/**/*"],
+      }),
+      "src/a.js": "export const a = 1;\n",
+      "src/b.jsx": "export const b = 1;\n",
+      "src/c.mjs": "export const c = 1;\n",
+      "src/d.cjs": "export const d = 1;\n",
+      "src/e.json": "{}\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    const root = analysis.evidence.configs.find((entry) => entry.path === "tsconfig.json");
+    expect(root?.effective_allow_js).toEqual({
+      value: true,
+      origin_config_path: "tsconfig.json",
+      source: "EXPLICIT",
+    });
+    for (const path of ["src/a.js", "src/b.jsx", "src/c.mjs", "src/d.cjs"]) {
+      expect(resolveProjectOwner(analysis, path).state).toBe("RESOLVED");
+    }
+    expect(resolveProjectOwner(analysis, "src/e.json").state).toBe("UNRESOLVED");
+  });
+
+  it("models jsconfig implicit allowJs and explicit override", async () => {
+    const inherited = await candidateWith({
+      "jsconfig.json": config({ include: ["src/**/*"] }),
+      "src/a.js": "export const a = 1;\n",
+    });
+    const inheritedAnalysis = await analyzeProjectOwnership(inherited);
+    expect(inheritedAnalysis.evidence.configs.find((entry) => entry.path === "jsconfig.json")?.effective_allow_js)
+      .toEqual({
+        value: true,
+        origin_config_path: "jsconfig.json",
+        source: "JSCONFIG_DEFAULT",
+      });
+    expect(resolveProjectOwner(inheritedAnalysis, "src/a.js").state).toBe("RESOLVED");
+
+    const overridden = await candidateWith({
+      "jsconfig.json": config({
+        compilerOptions: { allowJs: false },
+        include: ["src/**/*"],
+      }),
+      "src/a.js": "export const a = 1;\n",
+    });
+    const overriddenAnalysis = await analyzeProjectOwnership(overridden);
+    expect(overriddenAnalysis.evidence.configs.find((entry) => entry.path === "jsconfig.json")?.effective_allow_js)
+      .toEqual({
+        value: false,
+        origin_config_path: "jsconfig.json",
+        source: "EXPLICIT",
+      });
+    expect(resolveProjectOwner(overriddenAnalysis, "src/a.js").state).toBe("UNRESOLVED");
+  });
+
+  it("inherits allowJs through relative extends and lets jsconfig default override an inherited false", async () => {
+    const inherited = await candidateWith({
+      "configs/tsconfig.base.json": config({
+        compilerOptions: { allowJs: true },
+        include: ["../shared/**/*"],
+      }),
+      "packages/app/tsconfig.json": config({ extends: "../../configs/tsconfig.base.json" }),
+      "shared/a.js": "export const a = 1;\n",
+    });
+    const inheritedAnalysis = await analyzeProjectOwnership(inherited);
+    const app = inheritedAnalysis.evidence.configs.find((entry) => entry.path === "packages/app/tsconfig.json");
+    expect(app?.effective_allow_js).toEqual({
+      value: true,
+      origin_config_path: "configs/tsconfig.base.json",
+      source: "EXPLICIT",
+    });
+    expect(resolveProjectOwner(inheritedAnalysis, "shared/a.js").state).toBe("RESOLVED");
+
+    const jsconfig = await candidateWith({
+      "configs/tsconfig.base.json": config({
+        compilerOptions: { allowJs: false },
+        include: ["../shared/**/*"],
+      }),
+      "packages/app/jsconfig.json": config({ extends: "../../configs/tsconfig.base.json" }),
+      "shared/a.js": "export const a = 1;\n",
+    });
+    const jsconfigAnalysis = await analyzeProjectOwnership(jsconfig);
+    const jsApp = jsconfigAnalysis.evidence.configs.find((entry) => entry.path === "packages/app/jsconfig.json");
+    expect(jsApp?.effective_allow_js).toEqual({
+      value: true,
+      origin_config_path: "packages/app/jsconfig.json",
+      source: "JSCONFIG_DEFAULT",
+    });
+    expect(resolveProjectOwner(jsconfigAnalysis, "shared/a.js").state).toBe("RESOLVED");
+  });
+
+  it("keeps explicit files membership independent of include extension filtering", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({
+        compilerOptions: { allowJs: false },
+        files: ["src/a.js", "src/b.json"],
+      }),
+      "src/a.js": "export const a = 1;\n",
+      "src/b.json": "{}\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(resolveProjectOwner(analysis, "src/a.js").state).toBe("RESOLVED");
+    expect(resolveProjectOwner(analysis, "src/b.json").state).toBe("RESOLVED");
+  });
+
   it.each([
     ["literal", "src/exact.ts", "src/exact.ts", "src/other.ts"],
     ["single star", "src/*.ts", "src/a.ts", "src/nested/b.ts"],
@@ -389,6 +529,8 @@ describe("project ownership admission", () => {
     ["NUL pattern", { include: ["src/\0a.ts"] }, /without NUL/],
     ["non-array include", { include: "src/**/*.ts" }, /include must be an array/],
     ["non-string include entry", { include: [42] }, /include\[0\] must be a string/],
+    ["invalid allowJs", { compilerOptions: { allowJs: "yes" }, include: ["src/**/*.ts"] }, /allowJs must be a boolean/],
+    ["invalid compilerOptions", { compilerOptions: "strict", include: ["src/**/*.ts"] }, /compilerOptions must be an object/],
     ["package extends", { extends: "@scope/base", include: ["src/**/*.ts"] }, /package\/external config/],
     ["missing extends", { extends: "./missing.json", include: ["src/**/*.ts"] }, /extends missing candidate config/],
   ])("rejects %s", async (_name, body, pattern) => {
@@ -457,6 +599,29 @@ describe("project ownership admission", () => {
     });
     const aa = await analyzeProjectOwnership(a);
     const bb = await analyzeProjectOwnership(b);
+    expect(aa.evidence.model_sha256).not.toBe(bb.evidence.model_sha256);
+    expect(aa.evidence.configs[0]?.membership_sha256).not.toBe(bb.evidence.configs[0]?.membership_sha256);
+  });
+
+  it("changes membership identity when effective allowJs changes", async () => {
+    const a = await candidateWith({
+      "tsconfig.json": config({
+        compilerOptions: { allowJs: false },
+        include: ["src/**/*"],
+      }),
+      "src/a.js": "export const a = 1;\n",
+    });
+    const b = await candidateWith({
+      "tsconfig.json": config({
+        compilerOptions: { allowJs: true },
+        include: ["src/**/*"],
+      }),
+      "src/a.js": "export const a = 1;\n",
+    });
+    const aa = await analyzeProjectOwnership(a);
+    const bb = await analyzeProjectOwnership(b);
+    expect(aa.evidence.configs[0]?.effective_allow_js.value).toBe(false);
+    expect(bb.evidence.configs[0]?.effective_allow_js.value).toBe(true);
     expect(aa.evidence.model_sha256).not.toBe(bb.evidence.model_sha256);
     expect(aa.evidence.configs[0]?.membership_sha256).not.toBe(bb.evidence.configs[0]?.membership_sha256);
   });
