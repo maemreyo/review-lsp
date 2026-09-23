@@ -4,7 +4,7 @@ Review-LSP is intentionally developing from a narrow, verifiable vertical slice 
 
 This is a direction document, not a compatibility promise.
 
-## Current baseline — 0.1.0-alpha.4
+## Current baseline — 0.1.0-alpha.5
 
 The dependency-aware TypeScript path is implemented for an admitted subset:
 
@@ -17,15 +17,16 @@ The dependency-aware TypeScript path is implemented for an admitted subset:
 - persistent semantic runtime reuse;
 - hover and definition with provenance-bound receipts;
 - references with explicit declaration-inclusion identity and per-target provenance;
-- document diagnostics with deterministic TypeScript 6/7 transports, separate receipts, related-information provenance and engine-full-document completeness.
+- document diagnostics with deterministic TypeScript 6/7 transports, separate receipts, related-information provenance and engine-full-document completeness;
+- candidate-contained TypeScript project-reference graphs admitted into deterministic environment evidence for the frozen Alpha.5 subset.
 
-Diagnostics are semantic evidence for one admitted document and are not project-wide build correctness. Symbols remain deferred because Alpha.4 did not need to widen the evidence surface further.
+Project references in Alpha.5 are an admission/evidence hardening step, not a claim of universal TypeScript build-mode graph completeness. Exact `files`/`include` ownership and broader config chains remain separate work. Diagnostics remain semantic evidence for one admitted document, not project-wide build correctness. Symbols remain deferred.
 
 This is not universal dependency-project support. Unsupported or ambiguous package-manager, workspace, config, package-export, local-directory and build-pipeline surfaces remain PARTIAL or UNSUPPORTED.
 
-The frozen Alpha.4 implementation authority remains `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
+The frozen Alpha.5 implementation authority is `docs/design-notes/ALPHA5_PROJECT_REFERENCE_MASTER_PLAN.md`; the Alpha.4 semantic-operation authority remains historical context in `docs/design-notes/ALPHA4_SEMANTIC_IMPACT_MASTER_PLAN.md`.
 
-## Near term — post-Alpha.4 hardening
+## Near term — post-Alpha.5 hardening
 
 ### Richer provenance
 
@@ -58,7 +59,7 @@ prepare candidate
 
 After semantic breadth is stable, continue strengthening the TypeScript support matrix without weakening admission:
 
-- project references;
+- exact `files`/`include` ownership and project routing;
 - more TypeScript config chains;
 - more package exports/imports shapes;
 - more workspace routing cases;

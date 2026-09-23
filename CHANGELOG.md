@@ -6,6 +6,26 @@ The project is currently prerelease software. Until 1.0, minor versions may incl
 
 ## Unreleased
 
+## 0.1.0-alpha.5 — 2026-09-23
+
+### Added
+
+- Candidate-contained TypeScript project-reference admission bound into `EnvironmentManifest.project_references` with deterministic graph identity.
+- Strict Alpha.5 reference-path handling for admitted directory targets and existing config-authority explicit JSON targets.
+- TypeScript 6 and TypeScript 7 exact-engine acceptance coverage for semantic sessions whose environment includes a supported project-reference graph.
+
+### Security / correctness
+
+- Absolute, candidate-escaping, missing/unadmitted, duplicate-normalized, malformed, extra-field, cyclic, and otherwise unsupported project-reference graphs fail closed instead of consulting ambient host config.
+- Project-config bytes used for graph admission are read through candidate-integrity verification; parsed bytes and recorded config/reference SHA values share the same verified read boundary.
+- Unsupported project-reference admission downgrades strong environment binding without changing point/diagnostics receipt schemas or inventing a stronger semantic claim.
+- Project references remain an admitted candidate-contained subset; exact `files`/`include` ownership, broader config chains, package-based config resolution, and universal build-mode completeness are deferred.
+
+### Evidence
+
+- Independent implementation review found one MEDIUM candidate-integrity issue; successor candidate `eeb14530c94d349294730ce45fcd2fe4dc45b268` addressed it and finalized with no new findings.
+- Exact-candidate project-reference unit coverage, TypeScript 6/7 acceptance, full release checks, package/MCP/cache-crash smokes, platform matrix, Linux container, benchmark, consumer dogfood, and public-registry clean-install smoke are release gates.
+
 ## 0.1.0-alpha.4 — 2026-09-23
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "review-lsp",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Candidate-bound semantic code intelligence with provenance for AI code review",
   "keywords": [
     "lsp",

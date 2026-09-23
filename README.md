@@ -10,7 +10,7 @@
 
 Review-LSP runs LSP semantic queries against an exact Git candidate, not whichever checkout happens to be live. Each successful query returns a content-addressed receipt binding the candidate, document, semantic toolchain, environment, request, result, and isolation mode.
 
-Current public release: **0.1.0-alpha.4**.
+Current public release: **0.1.0-alpha.5**.
 
 ```bash
 npm install review-lsp@alpha
@@ -74,6 +74,7 @@ The current TypeScript profile includes:
 - `typescript-language-server@6.0.0`;
 - `typescript@6.0.3`;
 - exact local Git commit candidates;
+- candidate-contained TypeScript project-reference graphs admitted as a strict subset and bound into environment evidence;
 - `hover`, `definition`, `references`, and document `diagnostics`;
 - CLI lifecycle: `prepare`, `inspect`, point `query`, document `diagnostics`, `validate`, `close`;
 - MCP stdio server with:
@@ -159,31 +160,32 @@ The inner process verifies that `/candidate` is an explicit Linux read-only moun
 
 ## Release evidence
 
-`0.1.0-alpha.4` is release-gated by:
+`0.1.0-alpha.5` is release-gated by:
 
-- exact-candidate references/diagnostics unit and differential TypeScript 6/7 acceptance coverage;
+- exact-candidate project-reference unit coverage plus TypeScript 6/7 exact-engine acceptance;
 - exact release-candidate `pnpm check`, package/MCP/cache-crash smokes and benchmark;
-- real Workbench provider dogfood for references and document diagnostics — PASS before publish;
-- candidate-bound independent review of implementation and release-prep deltas — required PASS;
+- Workbench provider dogfood for the existing environment-binding/hash/limitations consumer contract on a real project-reference graph — PASS before publish;
+- candidate-bound independent review of implementation and release-prep deltas — required with no unresolved blocking findings;
 - macOS 14 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
 - Ubuntu 24.04 / Node 22.19.0 and 24.19.0 GitHub compatibility — required PASS before publish;
 - dedicated Linux Docker isolation job — required PASS before publish;
 - public-registry clean-install smoke — run after publication and recorded separately.
 
-See [compatibility evidence](docs/compatibility/0.1.0-alpha.4.md) and the [release notes](docs/releases/0.1.0-alpha.4.md).
+See [compatibility evidence](docs/compatibility/0.1.0-alpha.5.md) and the [release notes](docs/releases/0.1.0-alpha.5.md).
 
 ## Current limitations
 
 - The dependency provider is intentionally narrow: pnpm 10 lockfile projects and admitted workspace/config syntax only; unsupported package-manager/workspace/build surfaces remain `PARTIAL` or `UNSUPPORTED`.
 - TypeScript only for this alpha.
 - Dirty-worktree candidates are not supported.
+- Project-reference support is a candidate-contained admitted subset; exact `files`/`include` ownership, broader config chains, package-based config resolution, and build-mode completeness remain deferred.
 - Symbols and additional semantic operations are deferred; diagnostics are document-scoped semantic evidence and are not project-wide build correctness.
 - MCP is local stdio only.
 - Windows is not in the alpha compatibility claim.
 - Native mode is not a hostile-host sandbox.
 - A malicious container host administrator is outside the container profile's threat boundary.
 
-See the [current support matrix](docs/status/CURRENT.md) for the exact alpha.4 boundary and [ROADMAP.md](ROADMAP.md) for likely next areas.
+See the [current support matrix](docs/status/CURRENT.md) for the exact alpha.5 boundary and [ROADMAP.md](ROADMAP.md) for likely next areas.
 
 ## Development
 
