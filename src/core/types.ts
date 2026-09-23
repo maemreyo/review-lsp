@@ -60,6 +60,24 @@ export interface TypeScriptProfile {
   profile_sha256: string;
 }
 
+export interface ProjectReferenceBindingEvidence {
+  declared_path: string;
+  resolved_config_path: string;
+  resolved_config_sha256: string;
+}
+
+export interface ProjectReferenceConfigEvidence {
+  path: string;
+  sha256: string;
+  references: ProjectReferenceBindingEvidence[];
+}
+
+export interface ProjectReferenceEvidence {
+  state: "NONE" | "BOUND" | "UNSUPPORTED";
+  graph_sha256?: string;
+  configs: ProjectReferenceConfigEvidence[];
+}
+
 export interface EnvironmentManifest {
   schema_version: "review-lsp.environment.v1";
   environment_manifest_sha256: string;
@@ -71,6 +89,7 @@ export interface EnvironmentManifest {
   isolation: IsolationKind;
   isolation_identity: string;
   source_config_digests: Array<{ path: string; sha256: string }>;
+  project_references: ProjectReferenceEvidence;
   dependency_snapshot: {
     state: "NONE" | "BOUND" | "MISSING" | "UNSUPPORTED";
     snapshot_id?: string;

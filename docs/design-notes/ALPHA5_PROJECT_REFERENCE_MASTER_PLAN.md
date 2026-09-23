@@ -96,10 +96,10 @@ The referenced path must be candidate-relative after resolution from the declari
 
 Initial accepted targets mirror TypeScript's project-reference path rule observed against the admitted TypeScript 6 baseline:
 
-- a path ending in `.json` resolves to that explicit candidate-contained config file;
+- a path ending in `.json` resolves to that explicit candidate-contained config file, but Alpha.5 admits it only when it matches the existing config-authority naming subset (`tsconfig*.json` or `jsconfig.json`);
 - any other path resolves to candidate-contained `<path>/tsconfig.json`.
 
-Do not invent an extensionless `<path>.json` fallback: TypeScript's project-reference resolver does not do that.
+Do not invent an extensionless `<path>.json` fallback: TypeScript's project-reference resolver does not do that. Arbitrary differently named JSON configs remain unsupported in Alpha.5 because the current environment authority does not yet bind their broader config/extends semantics.
 
 No absolute path, parent escape, NUL, backslash ambiguity, URL, package name, or external filesystem target is admitted.
 

@@ -12,6 +12,7 @@ import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { contentId } from "../../src/core/canonical.js";
 import { scanDependencyTree } from "../../src/core/dependency-tree.js";
 import { removeDependencySnapshot } from "../../src/core/dependency-snapshot.js";
+import { buildEnvironmentManifest } from "../../src/core/environment.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { buildProjection, removeProjection } from "../../src/core/projection.js";
 import { queryDiagnosticsCore, SemanticSession } from "../../src/core/session.js";
@@ -70,6 +71,7 @@ async function exactProjectFixture(options: {
   enginePackage?: "typescript" | "typescript7";
   valueSource?: string;
   mainSource?: string;
+  projectReferences?: boolean;
 } = {}): Promise<{
   root: string;
   referenceRoot: string;
@@ -113,6 +115,19 @@ async function exactProjectFixture(options: {
       noEmit: true,
     },
     include: ["src/**/*.ts"],
+    ...(options.projectReferences ? { references: [{ path: "./packages/lib" }] } : {}),
+  }, null, 2) + "\n";
+  const referencedTsconfig = JSON.stringify({
+    compilerOptions: {
+      composite: true,
+      strict: true,
+      target: "ES2022",
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      declaration: true,
+      outDir: "dist",
+    },
+    include: ["src/**/*.ts"],
   }, null, 2) + "\n";
   const valueSource = options.valueSource ?? 'export const value: string = "candidate";\n';
   const mainSource = options.mainSource ?? 'import { value } from "./value";\nexport const result = value;\n';
@@ -135,6 +150,11 @@ async function exactProjectFixture(options: {
     await writeFile(join(base, "tsconfig.json"), tsconfig);
     await writeFile(join(base, "src", "value.ts"), valueSource);
     await writeFile(join(base, "src", "main.ts"), mainSource);
+    if (options.projectReferences) {
+      await mkdir(join(base, "packages", "lib", "src"), { recursive: true });
+      await writeFile(join(base, "packages", "lib", "tsconfig.json"), referencedTsconfig);
+      await writeFile(join(base, "packages", "lib", "src", "lib.ts"), "export const lib = 1;\n");
+    }
   }
 
   await git(repo, "add", "-A");
@@ -442,6 +462,48 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       expect(referenceDiagnostics.diagnostics).toEqual([]);
     } finally {
       await Promise.all([admitted.close(), reference.shutdown()]);
+    }
+  }, 120_000);
+
+  it.each([
+    ["TypeScript 6", "typescript" as const],
+    ["TypeScript 7", "typescript7" as const],
+  ])("admits a candidate-bound project-reference graph under %s exact-engine semantics", async (_label, enginePackage) => {
+    const { candidate, snapshot, projection, state, profile } = await exactProjectFixture({
+      enginePackage,
+      projectReferences: true,
+    });
+    const environment = await buildEnvironmentManifest(candidate, profile, { snapshot, projection });
+
+    expect(environment.project_references.state).toBe("BOUND");
+    expect(environment.project_references.graph_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(environment.project_references.configs).toHaveLength(1);
+    expect(environment.project_references.configs[0]?.references[0]?.resolved_config_path)
+      .toBe("packages/lib/tsconfig.json");
+    expect(environment.binding).toBe("VERIFIED");
+
+    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const admitted = await SemanticSession.create({
+      candidate,
+      profile,
+      stateDirectory: state,
+      snapshot,
+      projection,
+      resolvingProject,
+    });
+
+    try {
+      const position = "export const result = ".length;
+      const receipt = await admitted.hover({
+        path: "src/main.ts",
+        line: 1,
+        character: position,
+      });
+      expect(receipt.source_binding).toBe("VERIFIED");
+      expect(receipt.environment_binding).toBe("VERIFIED");
+      expect(receipt.semantic_toolchain.toolchain_alignment).toBe("EXACT_PROJECT");
+    } finally {
+      await admitted.close();
     }
   }, 120_000);
 
