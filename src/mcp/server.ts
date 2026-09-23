@@ -1,5 +1,3 @@
-import { dirname } from "node:path";
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
@@ -53,17 +51,16 @@ function requireCandidate(host: CandidateMcpHost, expectedCandidateId: string): 
   }
 }
 
-function candidateInfoProject(candidate: CandidateDescriptor): ResolvingProject {
-  const config = candidate.entries.find((entry) => (
-    entry.kind === "file"
-    && /(^|\/)(?:tsconfig|jsconfig)(?:\.[^/]+)?\.json$/.test(entry.path)
-  ));
-  if (!config) {
-    return { state: "UNRESOLVED", config_path: null, config_sha256: null, project_root: null };
-  }
-  const directory = dirname(config.path);
-  const probe = directory === "." ? "__review_lsp_info__.ts" : `${directory}/__review_lsp_info__.ts`;
-  return resolveProjectForDocument(candidate, probe);
+function candidateInfoProject(): ResolvingProject {
+  // Candidate-info is repository-wide metadata, not a document query. Binding it to a fake
+  // probe path would invent ownership under Alpha.6, so it deliberately uses no project owner.
+  return {
+    state: "UNRESOLVED",
+    config_path: null,
+    config_sha256: null,
+    project_root: null,
+    ownership_sha256: null,
+  };
 }
 
 async function acquireHostRuntime(host: CandidateMcpHost, project: ResolvingProject) {
@@ -91,7 +88,7 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
   }, async () => {
     let lease;
     try {
-      lease = await acquireHostRuntime(host, candidateInfoProject(host.candidate));
+      lease = await acquireHostRuntime(host, candidateInfoProject());
       const info = await lease.session.candidateInfo();
       return jsonResult({
         candidate_id: info.candidate.candidate_id,
@@ -132,7 +129,7 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     let lease;
     try {
       requireCandidate(host, expected_candidate_id);
-      const project = resolveProjectForDocument(host.candidate, path);
+      const project = await resolveProjectForDocument(host.candidate, path);
       lease = await acquireHostRuntime(host, project);
       return jsonResult(await lease.session.hover({ path, line, character }));
     } catch (error) {
@@ -149,7 +146,7 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     let lease;
     try {
       requireCandidate(host, expected_candidate_id);
-      const project = resolveProjectForDocument(host.candidate, path);
+      const project = await resolveProjectForDocument(host.candidate, path);
       lease = await acquireHostRuntime(host, project);
       return jsonResult(await lease.session.definition({ path, line, character }));
     } catch (error) {
@@ -169,7 +166,7 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     let lease;
     try {
       requireCandidate(host, expected_candidate_id);
-      const project = resolveProjectForDocument(host.candidate, path);
+      const project = await resolveProjectForDocument(host.candidate, path);
       lease = await acquireHostRuntime(host, project);
       return jsonResult(await lease.session.references({
         path,
@@ -194,7 +191,7 @@ export async function serveCandidateMcp(host: CandidateMcpHost): Promise<void> {
     let lease;
     try {
       requireCandidate(host, expected_candidate_id);
-      const project = resolveProjectForDocument(host.candidate, path);
+      const project = await resolveProjectForDocument(host.candidate, path);
       lease = await acquireHostRuntime(host, project);
       const info = await lease.session.candidateInfo();
       if (!info.capabilities.includes("diagnostics")) {

@@ -257,7 +257,7 @@ function normalizeUris(value: unknown, root: string): unknown {
 describe.runIf(process.platform === "darwin")("P7 semantic differential conformance", () => {
   it("matches a trusted TypeScript <=6 reference for exact-project hover and definition", async () => {
     const { root, referenceRoot, candidate, snapshot, projection, state, profile } = await exactProjectFixture();
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     expect(resolvingProject.state).toBe("RESOLVED");
 
     const admitted = await SemanticSession.create({
@@ -369,7 +369,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     expect(engineVersion).toBe("7.0.2");
     expect(nativeEntrypoint).not.toBeNull();
 
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile,
@@ -482,7 +482,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
       .toBe("packages/lib/tsconfig.json");
     expect(environment.binding).toBe("VERIFIED");
 
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile,
@@ -516,7 +516,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     const { root, referenceRoot, candidate, snapshot, projection, state, profile } = await exactProjectFixture({
       mainSource,
     });
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile,
@@ -618,7 +618,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
 
   it("retains diagnostics but downgrades environment binding when related information is unbound", async () => {
     const { root, candidate, snapshot, projection, state, profile } = await exactProjectFixture();
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile,
@@ -720,7 +720,7 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     } = await exactProjectFixture({ enginePackage: "typescript7", mainSource });
     expect(nativeEntrypoint).not.toBeNull();
 
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile,

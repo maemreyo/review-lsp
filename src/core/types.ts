@@ -78,6 +78,31 @@ export interface ProjectReferenceEvidence {
   configs: ProjectReferenceConfigEvidence[];
 }
 
+export interface ProjectOwnershipRuleEvidence {
+  origin_config_path: string;
+  base_directory: string;
+  values: string[];
+}
+
+export interface ProjectOwnershipConfigEvidence {
+  path: string;
+  sha256: string;
+  routable_project: boolean;
+  routing_reason: "CONVENTIONAL_CONFIG" | "PROJECT_REFERENCE_TARGET" | "INHERITANCE_ONLY";
+  extends_chain: Array<{ path: string; sha256: string }>;
+  effective_files: ProjectOwnershipRuleEvidence | null;
+  effective_include: ProjectOwnershipRuleEvidence | null;
+  effective_exclude: ProjectOwnershipRuleEvidence | null;
+  membership_sha256: string;
+}
+
+export interface ProjectOwnershipEvidence {
+  schema_version: "review-lsp.project-ownership.v1";
+  state: "NONE" | "BOUND" | "UNSUPPORTED";
+  model_sha256?: string;
+  configs: ProjectOwnershipConfigEvidence[];
+}
+
 export interface EnvironmentManifest {
   schema_version: "review-lsp.environment.v1";
   environment_manifest_sha256: string;
@@ -90,6 +115,7 @@ export interface EnvironmentManifest {
   isolation_identity: string;
   source_config_digests: Array<{ path: string; sha256: string }>;
   project_references: ProjectReferenceEvidence;
+  project_ownership: ProjectOwnershipEvidence;
   dependency_snapshot: {
     state: "NONE" | "BOUND" | "MISSING" | "UNSUPPORTED";
     snapshot_id?: string;
@@ -460,10 +486,18 @@ export interface ProjectionDescriptor {
 }
 
 export interface ResolvingProject {
-  state: "RESOLVED" | "UNRESOLVED";
+  state: "RESOLVED" | "UNRESOLVED" | "AMBIGUOUS" | "UNSUPPORTED";
   config_path: string | null;
   config_sha256: string | null;
   project_root: string | null;
+  ownership_sha256?: string | null;
+  candidate_configs?: Array<{
+    config_path: string;
+    config_sha256: string;
+    project_root: string;
+    ownership_sha256: string;
+  }>;
+  limitations?: string[];
 }
 
 /**

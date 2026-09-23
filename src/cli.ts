@@ -283,7 +283,7 @@ async function main(): Promise<void> {
     await verifyLinuxReadOnlyMount(candidate.source_root);
     const imageId = containerImageIdFromEnvironment();
     const profile = await createTypeScriptProfile();
-    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const resolvingProject = await resolveProjectForDocument(candidate, path);
     const session = await SemanticSession.create({
       candidate,
       profile,
@@ -317,12 +317,14 @@ async function main(): Promise<void> {
     await verifyLinuxReadOnlyMount(candidate.source_root);
     const imageId = containerImageIdFromEnvironment();
     const profile = await createTypeScriptProfile();
+    const resolvingProject = await resolveProjectForDocument(candidate, path);
     const session = await SemanticSession.create({
       candidate,
       profile,
       stateDirectory,
       isolation: "CONTAINER_READ_ONLY",
       isolationIdentity: `docker:${imageId}`,
+      resolvingProject,
     });
     try {
       const receipt = await runSessionQuery({
@@ -355,7 +357,7 @@ async function main(): Promise<void> {
       stateDirectory: queryState,
     });
     const { snapshot, projection } = environment;
-    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const resolvingProject = await resolveProjectForDocument(candidate, path);
     const session = await SemanticSession.create({
       candidate,
       profile,
@@ -398,7 +400,7 @@ async function main(): Promise<void> {
       stateDirectory: queryState,
     });
     const { snapshot, projection } = environment;
-    const resolvingProject = resolveProjectForDocument(candidate, path);
+    const resolvingProject = await resolveProjectForDocument(candidate, path);
     const session = await SemanticSession.create({
       candidate,
       profile,

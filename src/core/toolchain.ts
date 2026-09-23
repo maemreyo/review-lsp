@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { sha256 } from "./canonical.js";
+import { ReviewLspError } from "./errors.js";
+import { analyzeProjectOwnership, resolveProjectOwner } from "./project-ownership.js";
 import type {
   CandidateDescriptor,
   DependencySnapshotDescriptor,
@@ -20,39 +22,25 @@ import type {
  * `VERIFIED` alone is never read as "the project's own semantics answered this".
  */
 
-const PROJECT_CONFIG_NAMES = ["tsconfig.json", "jsconfig.json"];
-
 /**
- * Finds the config that owns a document, by walking up from its directory.
+ * Resolves the candidate-bound project that owns a document from Alpha.6 membership evidence.
  *
- * This is deliberately the nearest enclosing config rather than a full `references`/`include`
- * evaluation: it is enough to identify which project's toolchain applies, and it never claims
- * more than it checked.
+ * No path-proximity fallback is allowed here: a VERIFIED routing decision must come from the
+ * admitted files/include/exclude/relative-extends ownership model.
  */
-export function resolveProjectForDocument(
+export async function resolveProjectForDocument(
   candidate: CandidateDescriptor,
   documentPath: string,
-): ResolvingProject {
-  let directory = dirname(documentPath);
-  for (;;) {
-    for (const name of PROJECT_CONFIG_NAMES) {
-      const configPath = directory === "." ? name : `${directory}/${name}`;
-      const entry = candidate.entries.find((item) => item.path === configPath && item.kind === "file");
-      if (entry) {
-        return {
-          state: "RESOLVED",
-          config_path: configPath,
-          config_sha256: entry.sha256,
-          project_root: directory === "." ? "" : directory,
-        };
-      }
-    }
-    if (directory === "." || directory === "") break;
-    const parent = dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  return { state: "UNRESOLVED", config_path: null, config_sha256: null, project_root: null };
+): Promise<ResolvingProject> {
+  return resolveProjectOwner(await analyzeProjectOwnership(candidate), documentPath);
+}
+
+/** Ambiguous/unsupported ownership cannot select an engine or reusable runtime safely. */
+export function assertProjectRoutingAdmitted(project: ResolvingProject, documentPath: string): void {
+  if (project.state !== "AMBIGUOUS" && project.state !== "UNSUPPORTED") return;
+  const detail = project.limitations?.join("; ")
+    ?? `project ownership for ${documentPath} is ${project.state.toLowerCase()}`;
+  throw new ReviewLspError("ENVIRONMENT_PARTIAL", detail);
 }
 
 /** The TypeScript generation a version string belongs to, e.g. `7.0.2` -> 7. */
@@ -193,5 +181,14 @@ export function resolvingProjectIdentity(project: ResolvingProject): string {
     state: project.state,
     config_path: project.config_path,
     config_sha256: project.config_sha256,
+    ownership_sha256: project.ownership_sha256 ?? null,
+    candidate_configs: [...(project.candidate_configs ?? [])]
+      .sort((a, b) => a.config_path.localeCompare(b.config_path))
+      .map((candidate) => ({
+        config_path: candidate.config_path,
+        config_sha256: candidate.config_sha256,
+        project_root: candidate.project_root,
+        ownership_sha256: candidate.ownership_sha256,
+      })),
   }));
 }

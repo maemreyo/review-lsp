@@ -299,7 +299,7 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
     projections.push(initialProjection);
     expect(initialProjection.entry_point_gate.state).toBe("INCOMPLETE");
 
-    const resolvingProject = resolveProjectForDocument(candidate, "packages/app/src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "packages/app/src/main.ts");
     const initialSession = await SemanticSession.create({
       candidate,
       profile: admittedProfile,
@@ -471,8 +471,8 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
     });
     projections.push(projection);
 
-    const projectA = resolveProjectForDocument(candidate, "packages/a/src/main.ts");
-    const projectB = resolveProjectForDocument(candidate, "packages/b/src/main.ts");
+    const projectA = await resolveProjectForDocument(candidate, "packages/a/src/main.ts");
+    const projectB = await resolveProjectForDocument(candidate, "packages/b/src/main.ts");
     expect(projectA.config_path).toBe("packages/a/tsconfig.json");
     expect(projectB.config_path).toBe("packages/b/tsconfig.json");
 
@@ -590,7 +590,7 @@ describe.runIf(process.platform === "darwin")("P7 workspace/dependency semantic 
       workspaceManifests: [],
     });
     projections.push(projection);
-    const resolvingProject = resolveProjectForDocument(candidate, "src/main.ts");
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
     const admitted = await SemanticSession.create({
       candidate,
       profile: admittedProfile,

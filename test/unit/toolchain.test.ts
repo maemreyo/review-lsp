@@ -92,7 +92,7 @@ describe("toolchain alignment", () => {
 });
 
 describe("resolving project", () => {
-  it("binds config path as well as config bytes into resolving-project identity", () => {
+  it("binds config path, config bytes, and ownership evidence into resolving-project identity", () => {
     const a = resolvingProjectIdentity({
       state: "RESOLVED",
       config_path: "packages/a/tsconfig.json",
@@ -107,13 +107,29 @@ describe("resolving project", () => {
     });
 
     expect(a).not.toBe(b);
+
+    const ownershipA = resolvingProjectIdentity({
+      state: "RESOLVED",
+      config_path: "packages/a/tsconfig.json",
+      config_sha256: "f".repeat(64),
+      project_root: "packages/a",
+      ownership_sha256: "a".repeat(64),
+    });
+    const ownershipB = resolvingProjectIdentity({
+      state: "RESOLVED",
+      config_path: "packages/a/tsconfig.json",
+      config_sha256: "f".repeat(64),
+      project_root: "packages/a",
+      ownership_sha256: "b".repeat(64),
+    });
+    expect(ownershipA).not.toBe(ownershipB);
   });
 
-  it("resolves the nearest enclosing config for a document", async () => {
+  it("does not infer project ownership from directory proximity", async () => {
     const candidate = await candidateFor();
-    const resolved = resolveProjectForDocument(candidate, "packages/app/src/index.ts");
+    const resolved = await resolveProjectForDocument(candidate, "packages/app/src/index.ts");
 
-    // The fixture has no per-package tsconfig, so the document belongs to no project here.
+    // The fixture has no admitted membership covering this path, so proximity cannot invent an owner.
     expect(resolved.state).toBe("UNRESOLVED");
   });
 

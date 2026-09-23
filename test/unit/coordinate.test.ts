@@ -8,6 +8,7 @@ import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { assertCoordinateExpectation, buildCoordinateContext } from "../../src/core/coordinate.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { SemanticSession } from "../../src/core/session.js";
+import { resolveProjectForDocument } from "../../src/core/toolchain.js";
 import type { CandidateDescriptor, TypeScriptProfile } from "../../src/core/types.js";
 import { createTypeScriptAbRepo } from "../helpers/git.js";
 
@@ -81,8 +82,9 @@ describe("guarded queries", () => {
     const candidate = await prepareCandidate({ repo, commit: a, stateDirectory: state });
     candidates.push(candidate);
     profile ??= await createTypeScriptProfile();
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/value.ts");
 
-    const session = await SemanticSession.create({ candidate, profile, stateDirectory: state });
+    const session = await SemanticSession.create({ candidate, profile, stateDirectory: state, resolvingProject });
     try {
       const receipt = await session.hover({ path: "src/value.ts", line: 0, character: 13 });
       expect(receipt.document.context.token).toBe("value");

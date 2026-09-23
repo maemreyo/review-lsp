@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
+import { analyzeProjectOwnership } from "./project-ownership.js";
 import { analyzeProjectReferences } from "./project-references.js";
 import type {
   CandidateDescriptor,
@@ -80,6 +81,8 @@ export async function buildEnvironmentManifest(
 
   const projectReferences = await analyzeProjectReferences(candidate);
   limitations.push(...projectReferences.limitations);
+  const projectOwnership = await analyzeProjectOwnership(candidate);
+  limitations.push(...projectOwnership.limitations);
 
   let dependencyState: EnvironmentManifest["dependency_snapshot"]["state"] = "NONE";
   const packageEntry = candidate.entries.find((entry) => entry.path === "package.json" && entry.kind === "file");
@@ -133,6 +136,7 @@ export async function buildEnvironmentManifest(
     isolation_identity: isolationIdentity,
     source_config_digests: sourceConfigDigests,
     project_references: projectReferences.evidence,
+    project_ownership: projectOwnership.evidence,
     dependency_snapshot: snapshot
       ? { state: dependencyState, snapshot_id: snapshot.snapshot_id, sha256: snapshot.tree_manifest_sha256 }
       : { state: dependencyState },

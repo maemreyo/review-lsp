@@ -112,13 +112,20 @@ For `UNSUPPORTED`, evidence must state the unsupported construct(s) that blocked
 
 ## 5. Admitted project-config set
 
-Alpha.6 operates only on candidate-contained configs already within Review-LSP's admitted project-config naming surface.
+Alpha.6 parses candidate-contained configs within Review-LSP's admitted config naming surface, but it distinguishes configs that provide inheritance evidence from configs that are routable projects.
 
-At minimum this includes the Alpha.5 project-reference config pattern:
+The admitted config evidence surface includes the Alpha.5 pattern:
 
 - `tsconfig.json`
 - `tsconfig.*.json`
 - `jsconfig.json`
+
+A config participates in document-owner selection only when it is a routable project under the frozen subset:
+
+- a conventional `tsconfig.json` or `jsconfig.json`; or
+- an admitted explicit config that is the resolved target of an admitted project-reference edge.
+
+A non-conventional config used only as an `extends` base remains bound into the effective ownership evidence of its children but does not independently compete for document ownership. This avoids false ambiguity from files such as `tsconfig.base.json` while preserving exact inherited bytes. Arbitrary standalone `tsconfig.*.json` routing that is neither conventional nor project-referenced is outside the Alpha.6 claim.
 
 Every config used for ownership MUST be read via candidate-integrity-verified bytes, not raw mutable filesystem reads.
 
@@ -247,6 +254,7 @@ Introduce deterministic candidate-bound project-ownership evidence. Naming may v
 - state: `NONE | BOUND | UNSUPPORTED`;
 - sorted config evidence;
 - each config's exact SHA-256;
+- whether each config is a routable project or inheritance-only evidence, and why;
 - admitted relative `extends` chain with exact config digests;
 - effective `files/include/exclude` rule origin and normalized values;
 - deterministic membership digest per config;

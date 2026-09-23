@@ -15,6 +15,7 @@ import { classifyProjectionUri, verifyProjectionDescriptor } from "./projection.
 import { admitEngineArtifact, buildCandidateEngineLaunch, engineMayClaimExactProject, resolveExecutionProfile } from "./engine-isolation.js";
 import {
   alignmentBlocksStrongAdmission,
+  assertProjectRoutingAdmitted,
   assessToolchainAlignment,
   resolveProjectForDocument,
   resolveProjectToolchain,
@@ -512,6 +513,7 @@ export class SemanticSession {
     const projection = input.projection ?? null;
     const snapshot = input.snapshot ?? null;
     const resolvingProject = input.resolvingProject ?? null;
+    if (resolvingProject) assertProjectRoutingAdmitted(resolvingProject, "semantic session");
     if (snapshot && !projection) {
       throw new ReviewLspError(
         "PROJECTION_INVALID",
@@ -543,7 +545,7 @@ export class SemanticSession {
       mkdir(tmp, { recursive: true, mode: 0o700 }),
     ]);
 
-    const candidateEngine = snapshot && resolvingProject
+    const candidateEngine = snapshot && resolvingProject?.state === "RESOLVED"
       ? await admitEngineArtifact({ snapshot, projectRoot: resolvingProject.project_root }).catch(() => null)
       : null;
     const serverRoot = input.profile.server_runtime_root;
@@ -712,7 +714,14 @@ export class SemanticSession {
       languageId,
     });
 
-    const resolvingProject = resolveProjectForDocument(this.candidate, input.path);
+    const resolvingProject = await resolveProjectForDocument(this.candidate, input.path);
+    assertProjectRoutingAdmitted(resolvingProject, input.path);
+    if (resolvingProject.state === "RESOLVED" && !this.boundResolvingProject) {
+      throw new ReviewLspError(
+        "PROFILE_INVALID",
+        "semantic session is not bound to the document's resolving project; acquire a project-specific runtime",
+      );
+    }
     if (this.boundResolvingProject
       && resolvingProjectIdentity(this.boundResolvingProject) !== resolvingProjectIdentity(resolvingProject)) {
       throw new ReviewLspError(
@@ -767,6 +776,10 @@ export class SemanticSession {
 
     let environmentBinding: BindingState = this.environment.binding;
     const limitations = [...this.environment.limitations];
+    if (resolvingProject.state === "UNRESOLVED") {
+      environmentBinding = "PARTIAL";
+      limitations.push(`document ${input.path} is not owned by any admitted Alpha.6 project; exact semantic routing is not established`);
+    }
     if (alignmentBlocksStrongAdmission(assessment.alignment)) {
       environmentBinding = "PARTIAL";
       if (assessment.reason) limitations.push(assessment.reason);
@@ -901,9 +914,16 @@ export class SemanticSession {
       languageId,
     });
 
-    // The engine that answers is selected per document's owning project, so alignment is
-    // assessed there rather than once for the whole repository.
-    const resolvingProject = resolveProjectForDocument(this.candidate, input.path);
+    // The engine that answers is selected per document's evidence-proven owning project, so
+    // alignment is assessed there rather than once for the whole repository.
+    const resolvingProject = await resolveProjectForDocument(this.candidate, input.path);
+    assertProjectRoutingAdmitted(resolvingProject, input.path);
+    if (resolvingProject.state === "RESOLVED" && !this.boundResolvingProject) {
+      throw new ReviewLspError(
+        "PROFILE_INVALID",
+        "semantic session is not bound to the document's resolving project; acquire a project-specific runtime",
+      );
+    }
     if (this.boundResolvingProject
       && resolvingProjectIdentity(this.boundResolvingProject) !== resolvingProjectIdentity(resolvingProject)) {
       throw new ReviewLspError(
@@ -962,6 +982,10 @@ export class SemanticSession {
     let environmentBinding: BindingState = this.environment.binding;
     const limitations = [...this.environment.limitations];
 
+    if (resolvingProject.state === "UNRESOLVED") {
+      environmentBinding = "PARTIAL";
+      limitations.push(`document ${input.path} is not owned by any admitted Alpha.6 project; exact semantic routing is not established`);
+    }
     if (alignmentBlocksStrongAdmission(assessment.alignment)) {
       environmentBinding = "PARTIAL";
       if (assessment.reason) limitations.push(assessment.reason);

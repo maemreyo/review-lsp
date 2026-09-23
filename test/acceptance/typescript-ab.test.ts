@@ -8,6 +8,7 @@ import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
 import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { validateReceipt } from "../../src/core/receipts.js";
 import { SemanticSession } from "../../src/core/session.js";
+import { resolveProjectForDocument } from "../../src/core/toolchain.js";
 import type { CandidateDescriptor } from "../../src/core/types.js";
 import { createTypeScriptAbRepo } from "../helpers/git.js";
 
@@ -33,8 +34,12 @@ describe("TypeScript A/B candidate semantics", () => {
 
     const lineText = 'export const observed = "🧪", result = value;';
     const character = lineText.indexOf("value");
-    const sessionA = await SemanticSession.create({ candidate: candidateA, profile, stateDirectory: state });
-    const sessionB = await SemanticSession.create({ candidate: candidateB, profile, stateDirectory: state });
+    const [projectA, projectB] = await Promise.all([
+      resolveProjectForDocument(candidateA, "src/main.ts"),
+      resolveProjectForDocument(candidateB, "src/main.ts"),
+    ]);
+    const sessionA = await SemanticSession.create({ candidate: candidateA, profile, stateDirectory: state, resolvingProject: projectA });
+    const sessionB = await SemanticSession.create({ candidate: candidateB, profile, stateDirectory: state, resolvingProject: projectB });
     try {
       const hoverA = await sessionA.hover({ path: "src/main.ts", line: 1, character });
       const hoverB = await sessionB.hover({ path: "src/main.ts", line: 1, character });
@@ -92,7 +97,8 @@ describe("TypeScript A/B candidate semantics", () => {
     const candidate = await prepareCandidate({ repo, commit: a, stateDirectory: state });
     candidates.push(candidate);
     const profile = await createTypeScriptProfile();
-    const session = await SemanticSession.create({ candidate, profile, stateDirectory: state });
+    const resolvingProject = await resolveProjectForDocument(candidate, "src/main.ts");
+    const session = await SemanticSession.create({ candidate, profile, stateDirectory: state, resolvingProject });
     try {
       const path = join(candidate.source_root, "src", "value.ts");
       await chmod(path, 0o644);
