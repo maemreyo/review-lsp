@@ -127,6 +127,8 @@ A config participates in document-owner selection only when it is a routable pro
 
 A non-conventional config used only as an `extends` base remains bound into the effective ownership evidence of its children but does not independently compete for document ownership. This avoids false ambiguity from files such as `tsconfig.base.json` while preserving exact inherited bytes. Arbitrary standalone `tsconfig.*.json` routing that is neither conventional nor project-referenced is outside the Alpha.6 claim.
 
+Unsupported constructs in an admitted config block strong ownership only when that config is routing-relevant: a routable project, a config participating as a project-reference source, or an admitted relative-`extends` ancestor of one of those configs. An unrelated standalone `tsconfig.*.json` outside the routing claim remains content-addressed evidence, including its limitations, but must not poison ownership for otherwise provable projects.
+
 Every config used for ownership MUST be read via candidate-integrity-verified bytes, not raw mutable filesystem reads.
 
 Config discovery and ownership analysis must be bounded. Reuse the Alpha.5 project-config bound where reasonable; introduce a separate documented bound only if ownership expansion materially changes resource behavior.
@@ -255,6 +257,8 @@ Introduce deterministic candidate-bound project-ownership evidence. Naming may v
 - sorted config evidence;
 - each config's exact SHA-256;
 - whether each config is a routable project or inheritance-only evidence, and why;
+- whether each config is routing-relevant to the admitted ownership graph;
+- per-config limitations, including limitations retained as non-blocking evidence for unrelated standalone configs;
 - admitted relative `extends` chain with exact config digests;
 - effective `files/include/exclude` rule origin and normalized values;
 - deterministic membership digest per config;

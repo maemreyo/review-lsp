@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareCandidate, removeCandidate } from "../../src/core/candidate.js";
+import { buildEnvironmentManifest } from "../../src/core/environment.js";
+import { createTypeScriptProfile } from "../../src/core/profile.js";
 import { analyzeProjectOwnership, resolveProjectOwner } from "../../src/core/project-ownership.js";
 import type { CandidateDescriptor } from "../../src/core/types.js";
 import { createPnpmFixture } from "../helpers/pnpm-fixture.js";
@@ -59,6 +61,34 @@ describe("project ownership admission", () => {
       config_path: "tsconfig.json",
     });
     expect(resolveProjectOwner(analysis, "packages/app/src/other.ts").state).toBe("UNRESOLVED");
+  });
+
+  it("treats files:[] as an explicit empty membership rule", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ files: [] }),
+      "src/a.ts": "export const a = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("BOUND");
+    expect(resolveProjectOwner(analysis, "src/a.ts").state).toBe("UNRESOLVED");
+  });
+
+  it.each([
+    ["literal", "src/exact.ts", "src/exact.ts", "src/other.ts"],
+    ["single star", "src/*.ts", "src/a.ts", "src/nested/b.ts"],
+    ["question", "src/file?.ts", "src/file1.ts", "src/file10.ts"],
+  ])("evaluates %s include patterns from the frozen glob subset", async (_name, pattern, matched, unmatched) => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ include: [pattern] }),
+      [matched]: "export const matched = 1;\n",
+      [unmatched]: "export const unmatched = 2;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("BOUND");
+    expect(resolveProjectOwner(analysis, matched)).toMatchObject({ state: "RESOLVED", config_path: "tsconfig.json" });
+    expect(resolveProjectOwner(analysis, unmatched).state).toBe("UNRESOLVED");
   });
 
   it("evaluates recursive include and exclude without removing explicit files", async () => {
@@ -138,6 +168,50 @@ describe("project ownership admission", () => {
     expect(resolveProjectOwner(analysis, "packages/app/src/local.ts").state).toBe("RESOLVED");
   });
 
+  it("lets a child exclude override the inherited exclude without moving the inherited include base", async () => {
+    const candidate = await candidateWith({
+      "configs/tsconfig.base.json": config({
+        include: ["../shared/**/*.ts"],
+        exclude: ["../shared/parent-excluded.ts"],
+      }),
+      "packages/app/tsconfig.json": config({
+        extends: "../../configs/tsconfig.base.json",
+        exclude: ["../../shared/child-excluded.ts"],
+      }),
+      "shared/parent-excluded.ts": "export const parentExcluded = 1;\n",
+      "shared/child-excluded.ts": "export const childExcluded = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    const app = analysis.evidence.configs.find((entry) => entry.path === "packages/app/tsconfig.json");
+    expect(app?.effective_include?.origin_config_path).toBe("configs/tsconfig.base.json");
+    expect(app?.effective_exclude?.origin_config_path).toBe("packages/app/tsconfig.json");
+    expect(resolveProjectOwner(analysis, "shared/parent-excluded.ts").state).toBe("RESOLVED");
+    expect(resolveProjectOwner(analysis, "shared/child-excluded.ts").state).toBe("UNRESOLVED");
+  });
+
+  it("inherits ownership through a multi-level relative extends chain", async () => {
+    const candidate = await candidateWith({
+      "configs/tsconfig.base.json": config({ include: ["../shared/**/*.ts"] }),
+      "configs/tsconfig.middle.json": config({ extends: "./tsconfig.base.json" }),
+      "packages/app/tsconfig.json": config({ extends: "../../configs/tsconfig.middle.json" }),
+      "shared/a.ts": "export const a = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("BOUND");
+    const app = analysis.evidence.configs.find((entry) => entry.path === "packages/app/tsconfig.json");
+    expect(app?.extends_chain.map((entry) => entry.path)).toEqual([
+      "configs/tsconfig.middle.json",
+      "configs/tsconfig.base.json",
+    ]);
+    expect(app?.effective_include?.origin_config_path).toBe("configs/tsconfig.base.json");
+    expect(resolveProjectOwner(analysis, "shared/a.ts")).toMatchObject({
+      state: "RESOLVED",
+      config_path: "packages/app/tsconfig.json",
+    });
+  });
+
   it("routes by proven membership when nearest nested config does not own the document", async () => {
     const candidate = await candidateWith({
       "tsconfig.json": config({ include: ["packages/**/*.ts"] }),
@@ -149,6 +223,52 @@ describe("project ownership admission", () => {
     const analysis = await analyzeProjectOwnership(candidate);
     const resolved = resolveProjectOwner(analysis, "packages/app/src/index.ts");
     expect(resolved).toMatchObject({ state: "RESOLVED", config_path: "tsconfig.json" });
+  });
+
+  it("lets the root own a nested document when the child explicitly excludes it", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ include: ["packages/**/*.ts"] }),
+      "packages/app/tsconfig.json": config({
+        include: ["src/**/*.ts"],
+        exclude: ["src/index.ts"],
+      }),
+      "packages/app/src/index.ts": "export const nested = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(resolveProjectOwner(analysis, "packages/app/src/index.ts")).toMatchObject({
+      state: "RESOLVED",
+      config_path: "tsconfig.json",
+    });
+  });
+
+  it("reports ambiguity when sibling projects explicitly list the same shared file", async () => {
+    const candidate = await candidateWith({
+      "packages/a/tsconfig.json": config({ files: ["../../shared.ts"] }),
+      "packages/b/tsconfig.json": config({ files: ["../../shared.ts"] }),
+      "shared.ts": "export const shared = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    const resolved = resolveProjectOwner(analysis, "shared.ts");
+    expect(resolved.state).toBe("AMBIGUOUS");
+    expect(resolved.candidate_configs?.map((entry) => entry.config_path)).toEqual([
+      "packages/a/tsconfig.json",
+      "packages/b/tsconfig.json",
+    ]);
+  });
+
+  it("allows explicit files membership outside a config's immediate directory", async () => {
+    const candidate = await candidateWith({
+      "packages/app/tsconfig.json": config({ files: ["../../shared.ts"] }),
+      "shared.ts": "export const shared = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(resolveProjectOwner(analysis, "shared.ts")).toMatchObject({
+      state: "RESOLVED",
+      config_path: "packages/app/tsconfig.json",
+    });
   });
 
   it("fails closed on overlapping root and child ownership instead of choosing nearest", async () => {
@@ -212,11 +332,63 @@ describe("project ownership admission", () => {
     expect(resolveProjectOwner(analysis, "packages/app/src/index.ts").state).toBe("UNSUPPORTED");
   });
 
+  it("keeps an unrelated non-routable tsconfig.* limitation as evidence without poisoning routing", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ include: ["src/**/*.ts"] }),
+      "tsconfig.storybook.json": config({
+        extends: "@storybook/tsconfig",
+        include: ["stories/**/*.ts"],
+      }),
+      "src/main.ts": "export const main = 1;\n",
+      "stories/story.ts": "export const story = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("BOUND");
+    expect(analysis.limitations).toEqual([]);
+    const storybook = analysis.evidence.configs.find((entry) => entry.path === "tsconfig.storybook.json");
+    expect(storybook).toMatchObject({
+      routable_project: false,
+      routing_reason: "INHERITANCE_ONLY",
+      routing_relevant: false,
+    });
+    expect(storybook?.limitations.join("\n")).toMatch(/package\/external config/);
+    expect(resolveProjectOwner(analysis, "src/main.ts")).toMatchObject({
+      state: "RESOLVED",
+      config_path: "tsconfig.json",
+    });
+  });
+
+  it("fails closed when an unsupported inheritance base is routing-relevant", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ extends: "./configs/tsconfig.base.json" }),
+      "configs/tsconfig.base.json": config({
+        extends: "@scope/external-base",
+        include: ["../src/**/*.ts"],
+      }),
+      "src/main.ts": "export const main = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("UNSUPPORTED");
+    const base = analysis.evidence.configs.find((entry) => entry.path === "configs/tsconfig.base.json");
+    expect(base).toMatchObject({
+      routable_project: false,
+      routing_relevant: true,
+    });
+    expect(base?.limitations.join("\n")).toMatch(/package\/external config/);
+    expect(resolveProjectOwner(analysis, "src/main.ts").state).toBe("UNSUPPORTED");
+  });
+
   it.each([
     ["unsupported glob", { include: ["src/[ab].ts"] }, /unsupported glob grammar/],
     ["absolute file", { files: ["/tmp/a.ts"] }, /absolute\/external/],
+    ["absolute pattern", { include: ["/tmp/*.ts"] }, /absolute\/external/],
     ["escaping include", { include: ["../outside/**/*.ts"] }, /escapes candidate authority/],
+    ["backslash pattern", { include: ["src\\*.ts"] }, /uses backslashes/],
+    ["NUL pattern", { include: ["src/\0a.ts"] }, /without NUL/],
     ["non-array include", { include: "src/**/*.ts" }, /include must be an array/],
+    ["non-string include entry", { include: [42] }, /include\[0\] must be a string/],
     ["package extends", { extends: "@scope/base", include: ["src/**/*.ts"] }, /package\/external config/],
     ["missing extends", { extends: "./missing.json", include: ["src/**/*.ts"] }, /extends missing candidate config/],
   ])("rejects %s", async (_name, body, pattern) => {
@@ -246,6 +418,34 @@ describe("project ownership admission", () => {
     const analysis = await analyzeProjectOwnership(candidate);
     expect(analysis.evidence.state).toBe("UNSUPPORTED");
     expect(analysis.limitations.join("\n")).toMatch(/extends cycle/);
+  });
+
+  it("keeps unrelated standalone config limitations as evidence without poisoning routing or environment admission", async () => {
+    const candidate = await candidateWith({
+      "tsconfig.json": config({ include: ["src/**/*.ts"] }),
+      "configs/tsconfig.unused.json": config({ extends: "@scope/base" }),
+      "src/main.ts": "export const main = 1;\n",
+    });
+
+    const analysis = await analyzeProjectOwnership(candidate);
+    expect(analysis.evidence.state).toBe("BOUND");
+    expect(analysis.limitations).toEqual([]);
+    const unused = analysis.evidence.configs.find((entry) => entry.path === "configs/tsconfig.unused.json");
+    expect(unused).toMatchObject({
+      routable_project: false,
+      routing_reason: "INHERITANCE_ONLY",
+      routing_relevant: false,
+    });
+    expect(unused?.limitations.join("\n")).toMatch(/package\/external config/);
+    expect(resolveProjectOwner(analysis, "src/main.ts")).toMatchObject({
+      state: "RESOLVED",
+      config_path: "tsconfig.json",
+    });
+
+    const profile = await createTypeScriptProfile();
+    const environment = await buildEnvironmentManifest(candidate, profile);
+    expect(environment.project_ownership.state).toBe("BOUND");
+    expect(environment.limitations.some((limitation) => limitation.includes("configs/tsconfig.unused.json"))).toBe(false);
   });
 
   it("changes membership identity when ownership rules change", async () => {

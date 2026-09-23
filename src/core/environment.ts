@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { join } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
 import { analyzeProjectOwnership } from "./project-ownership.js";
@@ -20,18 +20,6 @@ export interface EnvironmentOptions {
   snapshot?: DependencySnapshotDescriptor | null;
   /** The execution projection the language server is pointed at, when one is in use. */
   projection?: ProjectionDescriptor | null;
-}
-
-function stripJsonComments(input: string): string {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
-}
-
-function configExtends(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const extendsValue = (value as Record<string, unknown>).extends;
-  return typeof extendsValue === "string" ? extendsValue : undefined;
 }
 
 export async function buildEnvironmentManifest(
@@ -55,28 +43,6 @@ export async function buildEnvironmentManifest(
     const entry = candidate.entries.find((item) => item.path === path);
     if (!entry) continue;
     sourceConfigDigests.push({ path, sha256: entry.sha256 });
-    try {
-      const text = await readFile(join(candidate.source_root, path), "utf8");
-      const parsed = JSON.parse(stripJsonComments(text)) as unknown;
-      const extendsValue = configExtends(parsed);
-      if (extendsValue) {
-        if (!extendsValue.startsWith(".") && !isAbsolute(extendsValue)) {
-          limitations.push(`${path} extends package/external config ${JSON.stringify(extendsValue)} without an admitted dependency snapshot`);
-        } else {
-          const resolved = normalize(join(dirname(path), extendsValue));
-          if (isAbsolute(resolved) || resolved === ".." || resolved.startsWith("../")) {
-            limitations.push(`${path} extends config outside the candidate root`);
-          } else {
-            const candidates = [resolved, `${resolved}.json`, join(resolved, "tsconfig.json")];
-            if (!candidates.some((candidatePath) => candidate.entries.some((item) => item.path === candidatePath))) {
-              limitations.push(`${path} extends missing candidate config ${JSON.stringify(extendsValue)}`);
-            }
-          }
-        }
-      }
-    } catch {
-      limitations.push(`${path} could not be parsed for environment admission`);
-    }
   }
 
   const projectReferences = await analyzeProjectReferences(candidate);

@@ -89,10 +89,12 @@ export interface ProjectOwnershipConfigEvidence {
   sha256: string;
   routable_project: boolean;
   routing_reason: "CONVENTIONAL_CONFIG" | "PROJECT_REFERENCE_TARGET" | "INHERITANCE_ONLY";
+  routing_relevant: boolean;
   extends_chain: Array<{ path: string; sha256: string }>;
   effective_files: ProjectOwnershipRuleEvidence | null;
   effective_include: ProjectOwnershipRuleEvidence | null;
   effective_exclude: ProjectOwnershipRuleEvidence | null;
+  limitations: string[];
   membership_sha256: string;
 }
 

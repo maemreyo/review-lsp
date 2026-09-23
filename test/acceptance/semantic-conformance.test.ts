@@ -601,8 +601,12 @@ describe.runIf(process.platform === "darwin")("P7 semantic differential conforma
     }
   }, 120_000);
 
-  it("fails closed when two admitted projects both own the queried document", async () => {
+  it.each([
+    ["TypeScript 6", "typescript" as const],
+    ["TypeScript 7", "typescript7" as const],
+  ])("fails closed when two admitted projects both own the queried document under %s", async (_label, enginePackage) => {
     const { candidate, snapshot, projection, state, profile } = await exactProjectFixture({
+      enginePackage,
       overlappingOwnership: true,
     });
     const environment = await buildEnvironmentManifest(candidate, profile, { snapshot, projection });

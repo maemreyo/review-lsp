@@ -418,6 +418,24 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
     return { routable_project: false, routing_reason: "INHERITANCE_ONLY" };
   };
 
+  // Only routable projects, project-reference sources that participate in admitted routing,
+  // and their relative-extends ancestors can affect Alpha.6 document ownership. Other admitted
+  // tsconfig.* files remain evidence, but their unsupported constructs must not poison an
+  // unrelated document's routing authority.
+  const routingRelevantPaths = new Set<string>();
+  const markRoutingRelevant = (path: string): void => {
+    if (routingRelevantPaths.has(path)) return;
+    routingRelevantPaths.add(path);
+    const parent = parsed.get(path)?.extendsTarget;
+    if (parent) markRoutingRelevant(parent);
+  };
+  for (const path of parsed.keys()) {
+    if (routingFor(path).routable_project) markRoutingRelevant(path);
+  }
+  for (const config of projectReferences.evidence.configs) {
+    markRoutingRelevant(config.path);
+  }
+
   const memo = new Map<string, EffectiveConfig>();
   const visiting: string[] = [];
 
@@ -432,10 +450,12 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
           path: config.path,
           sha256: config.sha256,
           ...routingFor(config.path),
+          routing_relevant: routingRelevantPaths.has(config.path),
           extends_chain: [],
           effective_files: null,
           effective_include: null,
           effective_exclude: null,
+          limitations: [`${config.path} extends chain exceeds depth limit ${MAX_EXTENDS_DEPTH}`],
           membership_sha256: sha256(canonicalJson({ path: config.path, state: "DEPTH_EXCEEDED" })),
         },
         limitations: [`${config.path} extends chain exceeds depth limit ${MAX_EXTENDS_DEPTH}`],
@@ -451,10 +471,12 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
           path: config.path,
           sha256: config.sha256,
           ...routingFor(config.path),
+          routing_relevant: routingRelevantPaths.has(config.path),
           extends_chain: [],
           effective_files: null,
           effective_include: null,
           effective_exclude: null,
+          limitations: [`project ownership extends cycle: ${cycle.join(" -> ")}`],
           membership_sha256: sha256(canonicalJson({ path: config.path, cycle })),
         },
         limitations: [`project ownership extends cycle: ${cycle.join(" -> ")}`],
@@ -471,36 +493,46 @@ export async function analyzeProjectOwnership(candidate: CandidateDescriptor): P
     const chain = parent
       ? [{ path: parent.evidence.path, sha256: parent.evidence.sha256 }, ...parent.evidence.extends_chain]
       : [];
-    const membershipStable = {
-      path: config.path,
-      sha256: config.sha256,
-      ...routingFor(config.path),
-      extends_chain: chain,
-      effective_files: effectiveFiles,
-      effective_include: effectiveInclude,
-      effective_exclude: effectiveExclude,
-    };
     const limitations = [...config.limitations, ...(parent?.limitations ?? [])];
     if (routingFor(config.path).routable_project && !effectiveFiles && !effectiveInclude) {
       limitations.push(`${config.path} has no effective files/include rule; Alpha.6 does not claim TypeScript default file discovery`);
     }
+    const uniqueLimitations = [...new Set(limitations)];
+    const membershipStable = {
+      path: config.path,
+      sha256: config.sha256,
+      ...routingFor(config.path),
+      routing_relevant: routingRelevantPaths.has(config.path),
+      extends_chain: chain,
+      effective_files: effectiveFiles,
+      effective_include: effectiveInclude,
+      effective_exclude: effectiveExclude,
+      limitations: uniqueLimitations,
+    };
     const result: EffectiveConfig = {
       evidence: {
         ...membershipStable,
         membership_sha256: sha256(canonicalJson(membershipStable)),
       },
-      limitations: [...new Set(limitations)],
+      limitations: uniqueLimitations,
     };
     memo.set(path, result);
     return result;
   };
 
   const configs = [...parsed.keys()].sort().map((path) => resolveEffective(path));
+  const relevantReferenceLimitations = projectReferences.evidence.state === "UNSUPPORTED"
+    ? projectReferences.limitations.filter((limitation) => {
+        const sourcePath = [...parsed.keys()].find((path) => limitation.startsWith(`${path} `));
+        return sourcePath ? routingRelevantPaths.has(sourcePath) : true;
+      })
+    : [];
   const limitations = [...new Set([
-    ...configs.flatMap((config) => config.limitations),
-    ...(projectReferences.evidence.state === "UNSUPPORTED"
-      ? projectReferences.limitations.map((limitation) => `project-reference dependency for ownership routing: ${limitation}`)
-      : []),
+    ...configs
+      .filter((config) => config.evidence.routing_relevant)
+      .flatMap((config) => config.limitations),
+    ...relevantReferenceLimitations
+      .map((limitation) => `project-reference dependency for ownership routing: ${limitation}`),
   ])];
   const evidenceConfigs = configs.map((config) => config.evidence).sort((a, b) => a.path.localeCompare(b.path));
   const modelSha256 = sha256(canonicalJson(evidenceConfigs));
