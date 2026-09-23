@@ -94,11 +94,12 @@ Alpha.5 admits `references` only when the property is absent or is an array of o
 
 The referenced path must be candidate-relative after resolution from the declaring config directory.
 
-Initial accepted targets:
+Initial accepted targets mirror TypeScript's project-reference path rule observed against the admitted TypeScript 6 baseline:
 
-- explicit candidate-contained JSON config path;
-- candidate-contained directory resolving to `tsconfig.json`;
-- extensionless path resolving uniquely to a candidate-contained `.json` config where the resolution rule is deterministic.
+- a path ending in `.json` resolves to that explicit candidate-contained config file;
+- any other path resolves to candidate-contained `<path>/tsconfig.json`.
+
+Do not invent an extensionless `<path>.json` fallback: TypeScript's project-reference resolver does not do that.
 
 No absolute path, parent escape, NUL, backslash ambiguity, URL, package name, or external filesystem target is admitted.
 
