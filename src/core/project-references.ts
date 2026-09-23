@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import { posix } from "node:path";
 
 import { canonicalJson, sha256 } from "./canonical.js";
+import { readCandidateFile } from "./candidate.js";
 import type {
   CandidateDescriptor,
   ProjectReferenceConfigEvidence,
@@ -104,6 +104,11 @@ export async function analyzeProjectReferences(candidate: CandidateDescriptor): 
       .filter((entry) => entry.kind === "file")
       .map((entry) => [entry.path, entry] as const),
   );
+  const verifiedConfigs = new Map<string, Awaited<ReturnType<typeof readCandidateFile>>>();
+  for (const entry of configEntries) {
+    verifiedConfigs.set(entry.path, await readCandidateFile(candidate, entry.path));
+  }
+
   const limitations: string[] = [];
   const evidenceConfigs: ProjectReferenceConfigEvidence[] = [];
   const adjacency = new Map<string, string[]>();
@@ -111,10 +116,12 @@ export async function analyzeProjectReferences(candidate: CandidateDescriptor): 
   let edgeCount = 0;
 
   for (const entry of configEntries) {
+    const verifiedConfig = verifiedConfigs.get(entry.path);
+    if (!verifiedConfig) throw new Error(`verified project config missing for ${entry.path}`);
+    const { bytes, sha256: configSha256 } = verifiedConfig;
     let parsed: unknown;
     try {
-      const text = await readFile(posix.join(candidate.source_root, entry.path), "utf8");
-      parsed = JSON.parse(stripJsonComments(text)) as unknown;
+      parsed = JSON.parse(stripJsonComments(bytes.toString("utf8"))) as unknown;
     } catch {
       limitations.push(`${entry.path} could not be parsed for project-reference admission`);
       adjacency.set(entry.path, []);
@@ -167,7 +174,8 @@ export async function analyzeProjectReferences(candidate: CandidateDescriptor): 
         continue;
       }
       const targetEntry = fileEntries.get(resolved.target);
-      if (!targetEntry || !PROJECT_CONFIG_PATTERN.test(resolved.target)) {
+      const verifiedTarget = verifiedConfigs.get(resolved.target);
+      if (!targetEntry || !verifiedTarget || !PROJECT_CONFIG_PATTERN.test(resolved.target)) {
         limitations.push(
           `${entry.path} project reference ${JSON.stringify(reference.path)} resolves to missing/unadmitted config ${resolved.target}`,
         );
@@ -192,7 +200,7 @@ export async function analyzeProjectReferences(candidate: CandidateDescriptor): 
       bindings.push({
         declared_path: reference.path,
         resolved_config_path: resolved.target,
-        resolved_config_sha256: targetEntry.sha256,
+        resolved_config_sha256: verifiedTarget.sha256,
       });
       targets.push(resolved.target);
     }
@@ -204,7 +212,7 @@ export async function analyzeProjectReferences(candidate: CandidateDescriptor): 
     adjacency.set(entry.path, targets);
     evidenceConfigs.push({
       path: entry.path,
-      sha256: entry.sha256,
+      sha256: configSha256,
       references: bindings,
     });
   }

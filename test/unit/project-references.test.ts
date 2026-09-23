@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -153,6 +153,18 @@ describe("project-reference admission", () => {
 
     expect(analysis.evidence.state).toBe("UNSUPPORTED");
     expect(analysis.limitations).toContain("tsconfig.json could not be parsed for project-reference admission");
+  });
+
+  it("fails closed when retained project-config bytes no longer match candidate identity", async () => {
+    const candidate = await candidateWithConfigs({
+      "tsconfig.json": config([{ path: "./packages/a" }]),
+      "packages/a/tsconfig.json": config(),
+    });
+    const path = join(candidate.source_root, "tsconfig.json");
+    await chmod(path, 0o644);
+    await writeFile(path, config([{ path: "./packages/missing" }]));
+
+    await expect(analyzeProjectReferences(candidate)).rejects.toThrow(/CANDIDATE_INTEGRITY_INVALID/);
   });
 
   it("binds graph evidence into the environment manifest and blocks strong admission on unsupported graphs", async () => {
