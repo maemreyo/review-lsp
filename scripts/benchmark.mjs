@@ -270,7 +270,7 @@ try {
   });
   const projectionMs = performance.now() - projectionStart;
 
-  const resolvingProject = resolveProjectForDocument(semanticCandidate, "src/main.ts");
+  const resolvingProject = await resolveProjectForDocument(semanticCandidate, "src/main.ts");
   manager = new SemanticRuntimeManager({ idleTtlMs: 60_000, maxRuntimes: 4 });
 
   const firstSemanticStart = performance.now();
